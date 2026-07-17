@@ -42,7 +42,7 @@ def hpl(gnss_pd: pd.DataFrame, sigma:float|None=None, alpha: float = 0.05, dof:i
 
     # Apply integrity monitoring for each timestamp group
     out_pd = pd.DataFrame()
-    for _, group in tqdm(gnss_pd.groupby(time_column, sort=True), desc="Applying global test"):
+    for _, group in tqdm(gnss_pd.groupby(time_column, sort=True), desc="Computing protection level"):
         # Build d_major
         d_major = group[uncertainty_column].to_numpy().ravel()
 

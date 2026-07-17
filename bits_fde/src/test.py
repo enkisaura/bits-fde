@@ -10,8 +10,8 @@ https://hal.science/tel-01959797v1
 """
 
 def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.05, number_of_unknown:int=4,
-                weight_column:str="weight", time_column:str="unix_time",  residuals_column:str="residuals_m") \
-        -> pd.DataFrame:
+                weight_column:str="weight", time_column:str="unix_time",  residuals_column:str="residuals_m",
+                verbose:bool=False) -> pd.DataFrame:
     """
     Performs global test on a dataframe with multiple timestamps.
 
@@ -19,12 +19,13 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
     of Squared Error (NSSE) as the test statistic.
 
     :param gnss_pd: BITS raw dataframe
-    :param sigma: Standard deviation of measurement noise
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
     :param alpha: Significance level
     :param number_of_unknown: Number of unknowns to solve
     :param weight_column: Name of the weight column
     :param time_column: Name of time column
     :param residuals_column: Name of pseudorange residuals column
+    :param verbose: set to True for verbose output
     :return: BITS raw dataframe with test results in the "valid_estimate" column
     """
 
@@ -35,7 +36,10 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
     gnss_pd["normalized_residual"] = None
 
     # Apply integrity monitoring for each timestamp group
-    for _, group in tqdm(gnss_pd.groupby(time_column, sort=True), desc="Applying global test"):
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying global test") if verbose else groups
+
+    for _, group in iterator:
         # Get residuals
         residuals = group[residuals_column].to_numpy().reshape(-1, 1)
 
@@ -81,7 +85,7 @@ def window_global_test(residuals:np.ndarray, W:np.ndarray, alpha:float, number_o
 
 def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.05,
                weight_column:str="weight", time_column:str="unix_time",  residuals_column:str="residuals_m",
-               steering_vector_column:tuple=("e_x", "e_y", "e_z")) -> pd.DataFrame:
+               steering_vector_column:tuple=("e_x", "e_y", "e_z"), verbose:bool=False) -> pd.DataFrame:
     """
     Performs local test on a dataframe with multiple timestamps.
 
@@ -89,12 +93,13 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
     Test (LT) can be carried out so as to identify the outlier. The LT uses the normalized residuals as test statistic.
 
     :param gnss_pd: BITS raw dataframe
-    :param sigma: Standard deviation of measurement noise
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
     :param alpha: Significance level
     :param weight_column: Name of the weight column
     :param time_column: Name of time column
     :param residuals_column: Name of pseudorange residuals column
     :param steering_vector_column: Names of steering vectors columns
+    :param verbose: set to True for verbose output
     :return: BITS raw dataframe with test results in the "valid_estimate" column
     """
     # Clean up
@@ -104,7 +109,10 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
     gnss_pd["normalized_residual"] = None
 
     # Apply integrity monitoring for each timestamp group
-    for _, group in tqdm(gnss_pd.groupby(time_column, sort=True), desc="Applying local test"):
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying local test") if verbose else groups
+
+    for _, group in iterator:
         # Build residuals
         residuals = group[residuals_column].to_numpy().reshape(-1, 1)
 
@@ -158,6 +166,6 @@ def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:fl
     for i in np.where(~valid_estimate)[0]:
         off_diag = np.abs(np.delete(R[i, :], i))
         if off_diag.size > 0 and r_diag[i] <= off_diag.max():
-            valid_estimate[i] = True
+            valid_estimate[i] = np.nan
 
     return valid_estimate, chi2_stat
