@@ -4,6 +4,7 @@ from scipy import stats
 from itertools import combinations
 from typing import Callable
 from tqdm import tqdm
+from joblib import Parallel, delayed
 
 from bits_fde.src import test
 
@@ -102,9 +103,11 @@ def window_classic(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma
 
         # 2. Apply global test
         if number_of_unknown is None:
-            number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
+            local_number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
+        else:
+            local_number_of_unknown = number_of_unknown
         window_gnss_pd = test.global_test(window_gnss_pd, sigma=sigma, alpha=alpha,
-                                          number_of_unknown=number_of_unknown, weight_column=weight_column,
+                                          number_of_unknown=local_number_of_unknown, weight_column=weight_column,
                                           time_column=time_column,  residuals_column=residuals_column)
         # Check if FDE is finished
         if window_gnss_pd["valid_estimate"].all():
@@ -116,7 +119,7 @@ def window_classic(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma
                                          time_column=time_column,  residuals_column=residuals_column,
                                          steering_vector_column=steering_vector_column)
         # Exclude max normalized residual
-        idx = window_gnss_pd["normalized_residual"].idxmax()
+        idx = window_gnss_pd["test_statistic"].idxmax()
         out_pd = pd.concat([out_pd, window_gnss_pd.loc[[idx]]], ignore_index=True)
         window_gnss_pd = window_gnss_pd.drop(idx)
         # Check if FDE is finished
@@ -128,78 +131,201 @@ def window_classic(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma
 
     return estimate_pd, out_pd
 
-def subset_testing(gnss_pd: pd.DataFrame, positioning_func:Callable, positioning_func_args: tuple = (),
-                   sigma: float = 0.3, alpha: float = 0.05, min_sv:int=5,
-                   steering_vector_column_name: tuple = ("steering_vector_x", "steering_vector_y", "steering_vector_z"),
-                   weight_column_name: str = "weight", residuals_column_name: str = "residuals") -> pd.DataFrame:
+def old_subset_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
+                number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
+                time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False, *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Each subset (number of satellite > 4) of the initial measurement set will be used to calculate a user position
-    solution, among which the ST with the most satellites and the smallest test statistic which passes the GT will be
-    chosen.
+    Performs Subset Test on a dataframe with multiple timestamps.
 
+    The principle of the Subset Test (ST) is to perform Global Test (GT) several times while taking out one or several
+    measurements at a time in order to find the right measurement set excluding the huge errors.
 
-    Returns:
+    After the initial failure of the GT with all the measurements, the ST will begin. The test statistics will be
+    calculated for all the possible subsets that include n + 1 to m − 1 measurement, where n is the number of unknown to
+    be estimated and m is the number of measurements. Then, the subset that has the smallest test statistic below the
+    threshold, and at the same time, the largest number of measurement, will be chosen to calculate the position
+    solution.
 
+    :param gnss_pd: BITS raw dataframe
+    :param positioning_func: Function to be used to estimate position
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
+    :param alpha: Significance level
+    :param number_of_unknown: Number of unknowns to solve
+    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
+    :param weight_column: Name of the weight column
+    :param time_column: Name of time column
+    :param residuals_column: Name of pseudorange residuals column
+    :param verbose: set to True for verbose output
+    :param args: args to be given to positioning_func
+    :param kwargs: kwargs to be given to positioning_func
+    :return: BITS pvt dataframe, BITS raw dataframe
     """
-    out_pd = pd.DataFrame()
+    out_raw_pd = pd.DataFrame()
+    out_estimate_pd = pd.DataFrame()
 
-    # Iterate over each timestamp
-    tqdm_desc = "Computing position using subset testing"
-    for _, group in tqdm(gnss_pd.groupby("unix_time"), total=len(gnss_pd["unix_time"].unique()), desc=tqdm_desc):
-        # 1. Find every possible combinations
-        n = len(group)
-        test_statistic_list = []
-        size_list = []
-        group_list = []
-        for size in range(min_sv, n + 1):
-            for combo_index in combinations(group.index, size):
-                sub_group = group.loc[list(combo_index)]
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying Subset Test") if verbose else groups
 
-                # 2. Compute position for each combination
-                sub_group = positioning_func(sub_group, *positioning_func_args)
+    for _, group in iterator:
+        estimate_pd, raw_pd = window_subset_test(group, positioning_func, sigma=sigma, alpha=alpha,
+                                                 number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
+                                                 weight_column=weight_column, time_column=time_column,
+                                                 residuals_column=residuals_column, *args, **kwargs)
 
-                # 3. Apply global test
-                chi2_stat = np.sum((sub_group[residuals_column_name] / sigma) ** 2) # Compute test statistic
-                chi2_threshold = stats.chi2.ppf(1 - alpha, df=size) # Compute threshold
-                passed = chi2_stat < chi2_threshold
+        out_raw_pd = pd.concat([out_raw_pd, raw_pd], axis=0)
+        out_estimate_pd = pd.concat([out_estimate_pd, estimate_pd], axis=0)
 
-                # 4. Keep only groups that passes GT
-                if passed:
-                    test_statistic_list.append(chi2_stat)
-                    size_list.append(size)
-                    group_list.append(sub_group)
+    return out_estimate_pd, out_raw_pd
 
-        if len(test_statistic_list) > 0:
-            # 3. Keep group with the largest number of measurements
-            max_meas = np.nanmax(size_list)
-            max_meas_index = [i for i, value in enumerate(size_list) if value == max_meas]
+def subset_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
+                number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
+                time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+                max_depth:int|None=None, *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Performs Subset Test on a dataframe with multiple timestamps.
 
-            # 4. Keep group with best test statistic
-            kept_test_statistic_list = [test_statistic_list[i] for i in max_meas_index]
-            min_test_statistic = np.nanmin(kept_test_statistic_list)
-            best_sv_statistic_index = [i for i, value in enumerate(kept_test_statistic_list) if value == min_test_statistic]
-            best_group_index = max_meas_index[best_sv_statistic_index[0]]
+    The principle of the Subset Test (ST) is to perform Global Test (GT) several times while taking out one or several
+    measurements at a time in order to find the right measurement set excluding the huge errors.
 
-            best_group = group_list[best_group_index]
-            best_group["test_statistic"] = min_test_statistic
-            out_pd = pd.concat([out_pd, best_group], ignore_index=True)
+    After the initial failure of the GT with all the measurements, the ST will begin. The test statistics will be
+    calculated for all the possible subsets that include n + 1 to m − 1 measurement, where n is the number of unknown to
+    be estimated and m is the number of measurements. Then, the subset that has the smallest test statistic below the
+    threshold, and at the same time, the largest number of measurement, will be chosen to calculate the position
+    solution.
 
-        """if len(test_statistic_list) > 0:
-            # 5. Keep group with best test statistic
-            min_test_statistic = np.nanmin(test_statistic_list)
-            best_test_statistic_index = [i for i, value in enumerate(test_statistic_list) if value == min_test_statistic]
+    :param gnss_pd: BITS raw dataframe
+    :param positioning_func: Function to be used to estimate position
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
+    :param alpha: Significance level
+    :param number_of_unknown: Number of unknowns to solve
+    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
+    :param weight_column: Name of the weight column
+    :param time_column: Name of time column
+    :param residuals_column: Name of pseudorange residuals column
+    :param verbose: set to True for verbose output
+    :param max_depth: Maximum allowed number of measurement size allowed, set to None for max
+    :param args: args to be given to positioning_func
+    :param kwargs: kwargs to be given to positioning_func
+    :return: BITS pvt dataframe, BITS raw dataframe
+    """
+    groups = gnss_pd.groupby(time_column, sort=True)
 
-            # 6. Keep group with the largest number of measurements
-            kept_size_list = [size_list[i] for i in best_test_statistic_index]
-            max_meas = np.nanmax(kept_size_list)
-            best_sv_statistic_index = [i for i, value in enumerate(kept_size_list) if value == max_meas]
-            best_group_index = best_test_statistic_index[best_sv_statistic_index[0]]
+    results = Parallel(n_jobs=-1)(
+        delayed(window_subset_test)(
+            group, positioning_func, sigma=sigma, alpha=alpha,
+            number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
+            weight_column=weight_column, time_column=time_column,
+            residuals_column=residuals_column, max_depth=max_depth, *args, **kwargs
+        )
+        for _, group in tqdm(groups, desc="Applying Subset Test", disable=not verbose)
+    )
 
-            best_group = group_list[best_group_index]
-            best_group["test_statistic"] = min_test_statistic
-            out_pd = pd.concat([out_pd, best_group], ignore_index=True)"""
+    estimate_list, raw_list = zip(*results) if results else ([], [])
+    out_estimate_pd = pd.concat(estimate_list, axis=0) if estimate_list else pd.DataFrame()
+    out_raw_pd = pd.concat(raw_list, axis=0) if raw_list else pd.DataFrame()
 
-    return out_pd
+    return out_estimate_pd, out_raw_pd
+
+
+def window_subset_test(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
+                       number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
+                       time_column:str="unix_time",  residuals_column:str="residuals_m", max_depth:int|None=None, *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Performs Subset Test on a single timestamp.
+
+    The principle of the Subset Test (ST) is to perform Global Test (GT) several times while taking out one or several
+    measurements at a time in order to find the right measurement set excluding the huge errors.
+
+    After the initial failure of the GT with all the measurements, the ST will begin. The test statistics will be
+    calculated for all the possible subsets that include n + 1 to m − 1 measurement, where n is the number of unknown to
+    be estimated and m is the number of measurements. Then, the subset that has the smallest test statistic below the
+    threshold, and at the same time, the largest number of measurement, will be chosen to calculate the position
+    solution.
+
+    :param window_gnss_pd: BITS raw dataframe
+    :param positioning_func: Function to be used to estimate position
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
+    :param alpha: Significance level
+    :param number_of_unknown: Number of unknowns to solve
+    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
+    :param weight_column: Name of the weight column
+    :param time_column: Name of time column
+    :param residuals_column: Name of pseudorange residuals column
+    :param max_depth: Maximum allowed number of measurement size allowed, set to None for max
+    :param args: args to be given to positioning_func
+    :param kwargs: kwargs to be given to positioning_func
+    :return: BITS pvt dataframe, BITS raw dataframe
+    """
+    # 1. Find every possible combinations
+    n = len(window_gnss_pd)
+    test_statistic_list = []
+    estimate_list = []
+    index_list = []
+    found_valid_group = False
+    if max_depth is not None and (n - max_depth) >= 1:
+        min_size = n - max_depth
+    else:
+        min_size = 1
+    # Start with the biggest group and iterate until a size with at least one valid group is found
+    for size in range(n, min_size, -1):
+        for combo_index in combinations(window_gnss_pd.index, size):
+            if number_of_unknown is None:
+                local_number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
+            else:
+                local_number_of_unknown = number_of_unknown
+
+            if size < local_number_of_unknown + 1:
+                continue
+
+            sub_window = window_gnss_pd.loc[list(combo_index)]
+
+            # 2. Compute position
+            try:
+                sub_estimate_pd, sub_window = positioning_func(sub_window, *args, **kwargs)
+            except:
+                continue
+
+            # 3. Apply global test
+            sub_window = test.global_test(sub_window, sigma=sigma, alpha=alpha,
+                                              number_of_unknown=local_number_of_unknown, weight_column=weight_column,
+                                              time_column=time_column, residuals_column=residuals_column)
+            # Keep window if global test passed
+            if sub_window["valid_estimate"].all():
+                sub_estimate_pd["valid_estimate"] = True
+
+                test_statistic_list.append(sub_window["test_statistic"].iloc[0])
+                estimate_list.append(sub_estimate_pd)
+                index_list.append(combo_index)
+                found_valid_group = True
+        if found_valid_group:
+            break
+
+    # if no valid group found, return initial estimate
+    if not found_valid_group:
+        # Compute position
+        try:
+            estimate_pd, window_gnss_pd = positioning_func(window_gnss_pd, *args, **kwargs)
+        except:
+            return pd.DataFrame(), pd.DataFrame()
+        estimate_pd["valid_estimate"] = False
+        window_gnss_pd["valid_estimate"] = False
+        return estimate_pd, window_gnss_pd
+
+    # 4. Keep group with best test statistic
+    min_test_statistic = np.nanmin(test_statistic_list)
+    best_group_index = [i for i, value in enumerate(test_statistic_list) if value == min_test_statistic][0]
+
+    best_estimate_pd = estimate_list[best_group_index]
+    best_group_window_index = index_list[best_group_index]
+
+    # Update valid_estimate and test_statistic at kept SV lines
+    window_gnss_pd.loc[best_group_window_index, "valid_estimate"] = True
+    window_gnss_pd.loc[best_group_window_index, "test_statistic"] = float(min_test_statistic)
+
+    return best_estimate_pd, window_gnss_pd
+
 
 def sequential_local_test(gnss_pd: pd.DataFrame, positioning_func:Callable, positioning_func_args: tuple = (), sigma: float = 0.3,
                     alpha: float = 0.05, num_min_meas: int = 5, max_iter: int = 20,

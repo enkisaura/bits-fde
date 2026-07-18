@@ -33,7 +33,7 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
     gnss_pd = gnss_pd.sort_values(time_column).reset_index(drop=True)
 
     gnss_pd["valid_estimate"] = None
-    gnss_pd["normalized_residual"] = None
+    gnss_pd["test_statistic"] = None
 
     # Apply integrity monitoring for each timestamp group
     groups = gnss_pd.groupby(time_column, sort=True)
@@ -52,7 +52,7 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
         result, chi2_stat = window_global_test(residuals, W, alpha, number_of_unknown)
 
         gnss_pd.loc[group.index, "valid_estimate"] = result
-        gnss_pd.loc[group.index, "normalized_residual"] = float(chi2_stat)
+        gnss_pd.loc[group.index, "test_statistic"] = float(chi2_stat)
 
     return gnss_pd
 
@@ -106,7 +106,7 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
     gnss_pd = gnss_pd.sort_values(time_column).reset_index(drop=True)
 
     gnss_pd["valid_estimate"] = None
-    gnss_pd["normalized_residual"] = None
+    gnss_pd["test_statistic"] = None
 
     # Apply integrity monitoring for each timestamp group
     groups = gnss_pd.groupby(time_column, sort=True)
@@ -129,7 +129,7 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
         valid_estimate, normalized_residuals  = window_local_test(residuals, W, G, alpha)
 
         gnss_pd.loc[group.index, "valid_estimate"] = valid_estimate
-        gnss_pd.loc[group.index, "normalized_residual"] = normalized_residuals
+        gnss_pd.loc[group.index, "test_statistic"] = normalized_residuals
 
     return gnss_pd
 
