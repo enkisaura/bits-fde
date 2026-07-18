@@ -48,88 +48,18 @@ def classic(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=No
     iterator = tqdm(groups, desc="Applying classic FDE") if verbose else groups
 
     for _, group in iterator:
-        estimate_pd, raw_pd = window_classic(group, positioning_func, sigma=sigma, alpha=alpha, max_iter=max_iter,
-                                             number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
-                                             steering_vector_column=steering_vector_column, weight_column=weight_column,
-                                             time_column=time_column,  residuals_column=residuals_column,
-                                             *args, **kwargs)
+        estimate_pd, raw_pd = (
+            window_iterative_local_test(group, positioning_func, sigma=sigma, alpha=alpha, max_iter=max_iter,
+                                        number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
+                                        steering_vector_column=steering_vector_column, weight_column=weight_column,
+                                        time_column=time_column,  residuals_column=residuals_column,
+                                        redundancy_check=False, *args, **kwargs))
 
         out_raw_pd = pd.concat([out_raw_pd, raw_pd], axis=0)
         out_estimate_pd = pd.concat([out_estimate_pd, estimate_pd], axis=0)
 
     return out_estimate_pd, out_raw_pd
 
-
-
-def window_classic(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
-                   max_iter:int=20, number_of_unknown:int|None=None, gnss_id_column:str="gnss_id",
-                   steering_vector_column:tuple=("e_x", "e_y", "e_z"), weight_column:str="weight",
-                   time_column:str="unix_time",  residuals_column:str="residuals_m", *args, **kwargs) \
-        -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Performs Classic method on a single timestamp.
-
-    One of the most basic FDE techniques is to simply use the GT to detect whether there is a fault. If it is the case,
-    the measurement with the largest normalized residual will be excluded.
-
-    :param window_gnss_pd: BITS raw dataframe
-    :param positioning_func: Function to be used to estimate position
-    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
-    :param alpha: Significance level
-    :param max_iter: Maximum allowed number of iterations
-    :param number_of_unknown: Number of unknowns to solve
-    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
-    :param steering_vector_column: Names of steering vectors columns
-    :param weight_column: Name of the weight column
-    :param time_column: Name of time column
-    :param residuals_column: Name of pseudorange residuals column
-    :param args: args to be given to positioning_func
-    :param kwargs: kwargs to be given to positioning_func
-    :return: BITS pvt dataframe, BITS raw dataframe
-    """
-    out_pd = pd.DataFrame()
-    estimate_pd = pd.DataFrame()
-    for index in range(max_iter):
-        # 1. Compute position
-        try:
-            estimate_pd, window_gnss_pd = positioning_func(window_gnss_pd, *args, **kwargs)
-        except:
-            break
-        estimate_pd["valid_estimate"] = False
-        # Check if FDE is finished
-        remaining_measurements_count = len(window_gnss_pd)
-        if remaining_measurements_count == 0:
-            break
-
-        # 2. Apply global test
-        if number_of_unknown is None:
-            local_number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
-        else:
-            local_number_of_unknown = number_of_unknown
-        window_gnss_pd = test.global_test(window_gnss_pd, sigma=sigma, alpha=alpha,
-                                          number_of_unknown=local_number_of_unknown, weight_column=weight_column,
-                                          time_column=time_column,  residuals_column=residuals_column)
-        # Check if FDE is finished
-        if window_gnss_pd["valid_estimate"].all():
-            estimate_pd["valid_estimate"] = True
-            break
-
-        # 3. Apply local test
-        window_gnss_pd = test.local_test(window_gnss_pd, sigma=sigma, alpha=alpha, weight_column=weight_column,
-                                         time_column=time_column,  residuals_column=residuals_column,
-                                         steering_vector_column=steering_vector_column)
-        # Exclude max normalized residual
-        idx = window_gnss_pd["test_statistic"].idxmax()
-        out_pd = pd.concat([out_pd, window_gnss_pd.loc[[idx]]], ignore_index=True)
-        window_gnss_pd = window_gnss_pd.drop(idx)
-        # Check if FDE is finished
-        remaining_measurements_count = len(window_gnss_pd)
-        if remaining_measurements_count == 0:
-            break
-
-    out_pd = pd.concat([out_pd, window_gnss_pd], ignore_index=True)
-
-    return estimate_pd, out_pd
 
 def subset_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
                 number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
@@ -331,7 +261,7 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
                                 alpha:float=0.05, max_iter:int=20, number_of_unknown:int|None=None,
                                 gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
                                 weight_column:str="weight", time_column:str="unix_time",
-                                residuals_column:str="residuals_m", *args, **kwargs) \
+                                residuals_column:str="residuals_m", redundancy_check:bool=True, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Iterative Local Test on a single timestamp.
@@ -352,6 +282,7 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
     :param weight_column: Name of the weight column
     :param time_column: Name of time column
     :param residuals_column: Name of pseudorange residuals column
+    :param redundancy_check: Set to False for Classic FDE
     :param args: args to be given to positioning_func
     :param kwargs: kwargs to be given to positioning_func
     :return: BITS pvt dataframe, BITS raw dataframe
@@ -389,7 +320,8 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
                                          steering_vector_column=steering_vector_column)
         # Exclude max normalized residual
         idx = window_gnss_pd["test_statistic"].idxmax()
-        if window_gnss_pd.loc[[idx], "valid_estimate"].iloc[0] is not False: # Check redundancy and LT result
+        # Check redundancy and LT result
+        if window_gnss_pd.loc[[idx], "valid_estimate"].iloc[0] is not False and redundancy_check:
             break
         out_pd = pd.concat([out_pd, window_gnss_pd.loc[[idx]]], ignore_index=True)
         window_gnss_pd = window_gnss_pd.drop(idx)
@@ -402,93 +334,154 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
 
     return estimate_pd, out_pd
 
-def forward_backward(gnss_pd: pd.DataFrame, positioning_func:Callable, window_positioning_func:Callable,
-                     positioning_func_args: tuple = (), window_positioning_func_args: tuple = (), sigma: float = 0.3,
-                     alpha: float = 0.05, num_min_meas: int = 5, max_iter: int = 20,
-                     steering_vector_column_name: tuple = ("steering_vector_x", "steering_vector_y", "steering_vector_z"),
-                     weight_column_name: str = "weight", residuals_column_name: str = "residuals") -> pd.DataFrame:
+
+def forward_backward(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
+                     max_iter:int=20, number_of_unknown:int|None=None, gnss_id_column:str="gnss_id",
+                     steering_vector_column:tuple=("e_x", "e_y", "e_z"), weight_column:str="weight",
+                     time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+                     *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    the forward loop will be conducted as the sequential LT described previously. Then in the backward loop, the
-    eliminated satellites in the forward loop will be reintroduced with all the possible combination until the optimal
-    measurement set is found. The main advantage of the FB technique is, on the one hand, to avoid the erroneous
-    rejection of a good measurement since a huge measurement error can sometimes distribute and hide in other
-    measurements’ residuals due to special satellite geometry; on the other hand, the effect of  re-introduction of
-    previous excluded satellite can enhance the satellite geometry which is usually poor in urban canyon.
+    Performs Forward-Backward on a dataframe with multiple timestamps.
 
-    Args:
-        gnss_pd:
-        positioning_func:
-        positioning_func_args:
-        sigma:
-        alpha:
-        num_min_meas:
-        max_iter:
-        steering_vector_column_name:
-        weight_column_name:
-        residuals_column_name:
+    There are two main parts in the FB testing algorithm: the forward part and the backward part. In the forward part,
+    the GT is firstly carried out to check the measurement consistency. If the GT fails, the LT will be performed in
+    order to identify and exclude the outliers. This forward part will be conducted recursively until no more erroneous
+    measurements are detected and the solution is declared reliable or unreliable. If the GT in the forward part is
+    passed and more than one measurement is excluded, then the backward part will begin, where the excluded measurements
+    will be reintroduced into the measurement set.
 
-    Returns:
-
+    :param gnss_pd: BITS raw dataframe
+    :param positioning_func: Function to be used to estimate position
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
+    :param alpha: Significance level
+    :param max_iter: Maximum allowed number of iterations
+    :param number_of_unknown: Number of unknowns to solve
+    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
+    :param steering_vector_column: Names of steering vectors columns
+    :param weight_column: Name of the weight column
+    :param time_column: Name of time column
+    :param residuals_column: Name of pseudorange residuals column
+    :param verbose: set to True for verbose output
+    :param args: args to be given to positioning_func
+    :param kwargs: kwargs to be given to positioning_func
+    :return: BITS pvt dataframe, BITS raw dataframe
     """
-    # 1 Apply sequential local test
-    gnss_pd = sequential_local_test(gnss_pd, positioning_func=positioning_func,
-                                    positioning_func_args=positioning_func_args, sigma=sigma, alpha=alpha,
-                                    num_min_meas=num_min_meas, max_iter=max_iter,
-                                    steering_vector_column_name=steering_vector_column_name,
-                                    weight_column_name=weight_column_name, residuals_column_name=residuals_column_name)
+    out_raw_pd = pd.DataFrame()
+    out_estimate_pd = pd.DataFrame()
 
-    # 2 Add satellites back
-    out_pd = gnss_pd.copy()
-    # Iterate over each timestamp
-    tqdm_desc = "Computing position using forward/backward testing"
-    for _, group in tqdm(gnss_pd.groupby("unix_time"), total=len(gnss_pd["unix_time"].unique()), desc=tqdm_desc):
-        excluded_group = group[group["exclude_measurement"]==True]
-        kept_group = group[group["exclude_measurement"]==False]
-        if len(excluded_group) == 0:
-            out_pd = pd.concat([out_pd, kept_group[kept_group["chi_2_passed"]==True]], ignore_index=True)
-            continue
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying Forward-Backward FDE") if verbose else groups
 
-        excluded_size = len(excluded_group)
-        test_statistic_list = []
-        size_list = []
-        group_list = []
-        for size in range(0, excluded_size+1):
-            for combo_index in combinations(excluded_group.index, size):
-                sub_group = pd.concat([kept_group, group.loc[list(combo_index)]])
-    
-                # 2. Compute position for each combination
-                sub_group = window_positioning_func(sub_group, *window_positioning_func_args)
-    
-                # 3. Apply global test
-                chi2_stat = np.sum((sub_group[residuals_column_name] / sigma) ** 2)  # Compute test statistic
-                chi2_threshold = stats.chi2.ppf(1 - alpha, df=len(sub_group))  # Compute threshold
-                passed = chi2_stat < chi2_threshold
-    
-                # 4. Keep only groups that passes GT
-                if passed:
-                    test_statistic_list.append(chi2_stat)
-                    size_list.append(size)
-                    group_list.append(sub_group)
+    for _, group in iterator:
+        estimate_pd, raw_pd = (
+            window_forward_backward(group, positioning_func, sigma=sigma, alpha=alpha,  max_iter=max_iter,
+                                    number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
+                                    steering_vector_column=steering_vector_column, weight_column=weight_column,
+                                    time_column=time_column,  residuals_column=residuals_column, *args, **kwargs))
 
-        if len(test_statistic_list) > 0:
-            # 3. Keep group with the largest number of measurements
-            max_meas = np.nanmax(size_list)
-            max_meas_index = [i for i, value in enumerate(size_list) if value == max_meas]
+        out_raw_pd = pd.concat([out_raw_pd, raw_pd], axis=0)
+        out_estimate_pd = pd.concat([out_estimate_pd, estimate_pd], axis=0)
 
-            # 4. Keep group with best test statistic
-            kept_test_statistic_list = [test_statistic_list[i] for i in max_meas_index]
-            min_test_statistic = np.nanmin(kept_test_statistic_list)
-            best_sv_statistic_index = [i for i, value in enumerate(kept_test_statistic_list) if value == min_test_statistic]
-            best_group_index = max_meas_index[best_sv_statistic_index[0]]
+    return out_estimate_pd, out_raw_pd
 
-            best_group = group_list[best_group_index]
-            best_group["test_statistic"] = min_test_statistic
-            out_pd = pd.concat([out_pd, best_group], ignore_index=True)
 
-    out_pd.sort_values("unix_time", inplace=True)
-    out_pd.reset_index(drop=True, inplace=True)
-    return out_pd
-    
+def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None,
+                            alpha:float=0.05, max_iter:int=20, number_of_unknown:int|None=None,
+                            gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
+                            weight_column:str="weight", time_column:str="unix_time",
+                            residuals_column:str="residuals_m", redundancy_check:bool=True, *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Performs Forward-Backward on a single timestamp.
+
+    There are two main parts in the FB testing algorithm: the forward part and the backward part. In the forward part,
+    the GT is firstly carried out to check the measurement consistency. If the GT fails, the LT will be performed in
+    order to identify and exclude the outliers. This forward part will be conducted recursively until no more erroneous
+    measurements are detected and the solution is declared reliable or unreliable. If the GT in the forward part is
+    passed and more than one measurement is excluded, then the backward part will begin, where the excluded measurements
+    will be reintroduced into the measurement set.
+
+    :param window_gnss_pd: BITS raw dataframe
+    :param positioning_func: Function to be used to estimate position
+    :param sigma: Standard deviation of measurement noise set to None to use 1/weight² as sigma
+    :param alpha: Significance level
+    :param max_iter: Maximum allowed number of iterations
+    :param number_of_unknown: Number of unknowns to solve
+    :param gnss_id_column: Name of the gnss constellation ID column (used to determine number_of_unknown)
+    :param steering_vector_column: Names of steering vectors columns
+    :param weight_column: Name of the weight column
+    :param time_column: Name of time column
+    :param residuals_column: Name of pseudorange residuals column
+    :param redundancy_check: Set to False for Classic FDE
+    :param args: args to be given to positioning_func
+    :param kwargs: kwargs to be given to positioning_func
+    :return: BITS pvt dataframe, BITS raw dataframe
+    """
+    # 1 Forward: iterative local test
+    pd_gnss_estimate, window_gnss_pd = (
+        window_iterative_local_test(window_gnss_pd, positioning_func, sigma=sigma, alpha=alpha, max_iter=max_iter,
+                                    number_of_unknown=number_of_unknown, gnss_id_column=gnss_id_column,
+                                    steering_vector_column=steering_vector_column, weight_column=weight_column,
+                                    time_column=time_column, residuals_column=residuals_column, *args, **kwargs))
+
+    # Check if Iterative Local Test passed
+    if not window_gnss_pd["valid_estimate"].any():
+        return pd_gnss_estimate, window_gnss_pd
+
+    # 2 Backward: excluded measurements reintroduction
+    # A. Find valid/excluded measurements
+    excluded_group = window_gnss_pd[window_gnss_pd["valid_estimate"] == False]
+    valid_group = window_gnss_pd[window_gnss_pd["valid_estimate"] == True]
+
+    # B find every possible combinations
+    excluded_size = len(excluded_group)
+    test_statistic_list = []
+    estimate_list = []
+    index_list = []
+    found_valid_group = False
+
+    for  size in range(excluded_size, 0, -1):
+        for combo_index in combinations(excluded_group.index, size):
+            sub_group = pd.concat([valid_group, window_gnss_pd.loc[list(combo_index)]])
+            # C. Compute position
+            try:
+                sub_estimate_pd, sub_group = positioning_func(sub_group, *args, **kwargs)
+            except:
+                continue
+
+            # D. Apply global test
+            if number_of_unknown is None:
+                local_number_of_unknown = 3 + len(sub_group[gnss_id_column].unique())
+            else:
+                local_number_of_unknown = number_of_unknown
+            sub_group = test.global_test(sub_group, sigma=sigma, alpha=alpha, number_of_unknown=local_number_of_unknown,
+                                         weight_column=weight_column, time_column=time_column,
+                                         residuals_column=residuals_column)
+
+            # Keep window if global test passed
+            if window_gnss_pd["valid_estimate"].all():
+                sub_estimate_pd["valid_estimate"] = True
+                test_statistic_list.append(sub_group["test_statistic"].iloc[0])
+                estimate_list.append(sub_estimate_pd)
+                index_list.append(combo_index)
+                found_valid_group = True
+
+    # if no valid group found, return forward estimate
+    if not found_valid_group:
+        return pd_gnss_estimate, window_gnss_pd
+
+    # E. Keep group with best test statistic
+    min_test_statistic = np.nanmin(test_statistic_list)
+    best_group_index = [i for i, value in enumerate(test_statistic_list) if value == min_test_statistic][0]
+
+    best_estimate_pd = estimate_list[best_group_index]
+    best_group_window_index = index_list[best_group_index]
+
+    # Update valid_estimate and test_statistic at kept SV lines
+    window_gnss_pd.loc[best_group_window_index, "valid_estimate"] = True
+    window_gnss_pd.loc[best_group_window_index, "test_statistic"] = float(min_test_statistic)
+
+    return best_estimate_pd, window_gnss_pd
 
 
 def danish(gnss_pd: pd.DataFrame, positioning_func:Callable, positioning_func_args: tuple = (), sigma: float = 0.3,
