@@ -122,6 +122,25 @@ def test_forward_backward_fde():
     txt = f"FDE yield insufficient performances with {len(pd_gnss_pvt)} valid estimate and {pd_gnss_pvt["error_m"].mean()}m mean error for {pd_gnss_pvt["hpl_m"].mean()}m mean protection level."
     assert (len(pd_gnss_pvt) > 0) and (abs(pd_gnss_pvt["error_m"]) - gt_uncertainty < pd_gnss_pvt["hpl_m"]).all(), txt
 
+def test_danish_fde():
+    pd_gnss_pvt, pd_gnss_raw = spp.danish_fde(raw_pd, alpha=alpha, sigma=sigma, ephem_filepath=ephemeris_filepath,
+                                              max_iter=20, verbose=True)
+
+    pd_gnss_pvt = (
+        pd.merge_asof(pd_gnss_pvt, nmea_pd[["unix_time", "x_rx_m", "y_rx_m", "z_rx_m"]],
+                      on="unix_time", suffixes=("", "_gt"), direction="nearest", tolerance=0.1))
+
+    pd_gnss_pvt["x_error_m"] = pd_gnss_pvt["x_rx_m"] - pd_gnss_pvt["x_rx_m_gt"]
+    pd_gnss_pvt["y_error_m"] = pd_gnss_pvt["y_rx_m"] - pd_gnss_pvt["y_rx_m_gt"]
+    pd_gnss_pvt["z_error_m"] = pd_gnss_pvt["z_rx_m"] - pd_gnss_pvt["z_rx_m_gt"]
+    pd_gnss_pvt["error_m"] = np.sqrt(
+        pd_gnss_pvt["x_error_m"] ** 2 + pd_gnss_pvt["y_error_m"] ** 2 + pd_gnss_pvt["z_error_m"] ** 2)
+
+    pd_gnss_pvt = pd_gnss_pvt[pd_gnss_pvt["valid_estimate"] == True]
+
+    txt = f"FDE yield insufficient performances with {len(pd_gnss_pvt)} valid estimate and {pd_gnss_pvt["error_m"].mean()}m mean error for {pd_gnss_pvt["hpl_m"].mean()}m mean protection level."
+    assert (len(pd_gnss_pvt) > 0) and (abs(pd_gnss_pvt["error_m"]) - gt_uncertainty < pd_gnss_pvt["hpl_m"]).all(), txt
+
 def test_irls():
     pd_gnss_pvt, pd_gnss_raw = spp.irls_fde(raw_pd, alpha=alpha, ephem_filepath=ephemeris_filepath, max_iter=20,
                                             verbose=True)
@@ -142,9 +161,10 @@ def test_irls():
     assert (len(pd_gnss_pvt) > 0) and (abs(pd_gnss_pvt["error_m"]) - gt_uncertainty < pd_gnss_pvt["hpl_m"]).all(), txt
 
 if __name__ == '__main__':
-    #test_global_test()
-    #test_classic_fde()
-    #test_subset_test_fde()
-    #test_iterative_local_test_fde()
-    #test_forward_backward_fde()
+    test_global_test()
+    test_classic_fde()
+    test_subset_test_fde()
+    test_iterative_local_test_fde()
+    test_forward_backward_fde()
+    test_danish_fde()
     test_irls()

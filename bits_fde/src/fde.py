@@ -483,74 +483,159 @@ def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callab
     return best_estimate_pd, window_gnss_pd
 
 
-def danish(gnss_pd: pd.DataFrame, positioning_func:Callable, positioning_func_args: tuple = (), sigma: float = 0.3,
-                    alpha: float = 0.05, num_min_meas: int = 5, max_iter: int = 10,
-                    steering_vector_column_name: tuple = ("steering_vector_x", "steering_vector_y", "steering_vector_z"),
-                    weight_column_name: str = "weight", residuals_column_name: str = "residuals") -> pd.DataFrame:
+def danish(gnss_pd, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05, number_of_unknown:int|None=None,
+           max_iter:int=20, delta:float=1e-7, time_column:str="unix_time", residuals_column:str="residuals_m",
+           weight_column:str="weight", gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
+           estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), verbose=False, *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    an iteratively reweighting procedure on the pre-estimated measurement variance will be carried out according to the
-    ratio between local test statistic wi and the local threshold th. What should be highlighted is that there is no
-    exclusion step in this method, which can well keep the initial satellite geometry. If the algorithm cannot converge
-    after several iteration (here, we fix it as 10), the solution will be declared as unreliable.
+    Performs Danish FDE on a dataframe with multiple timestamps.
 
-    Args:
-        gnss_pd:
-        positioning_func:
-        positioning_func_args:
-        sigma:
-        alpha:
-        num_min_meas:
-        max_iter:
-        steering_vector_column_name:
-        weight_column_name:
-        residuals_column_name:
+    The Danish method begins with a Global Test (GT). If the GT is failed, a Local Test (LT) will be carried out in
+    order to identify the faulty measurements. Once the outlier is identified by LT, the exclusion step is replaced by
+    the reweighting scheme. The variance of the suspected measurement will exponentially increase based on the
+    normalized residuals.
 
-    Returns:
+    sigma²_{j+1} = sigma²_{0} . | e(w_{j}/th), if w_{j} > th
+                                | 1          , else
 
+    :param window_gnss_pd:
+    :param positioning_func:
+    :param sigma:
+    :param alpha:
+    :param number_of_unknown:
+    :param max_iter:
+    :param delta:
+    :param time_column:
+    :param residuals_column:
+    :param weight_column:
+    :param gnss_id_column:
+    :param steering_vector_column:
+    :param estimate_column:
+    :param args:
+    :param kwargs:
+    :return:
     """
-    sub_pd = gnss_pd.copy()
-    sub_pd["chi_2_passed"] = False
-    out_pd = pd.DataFrame()
+    out_raw_pd = pd.DataFrame()
+    out_estimate_pd = pd.DataFrame()
+
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying Danish FDE") if verbose else groups
+
+    for _, group in iterator:
+        estimate_pd, raw_pd = window_danish(group, positioning_func, sigma=sigma, alpha=alpha,
+                                            number_of_unknown=number_of_unknown,  max_iter=max_iter, delta=delta,
+                                            time_column=time_column, residuals_column=residuals_column,
+                                            weight_column=weight_column, gnss_id_column=gnss_id_column,
+                                            steering_vector_column=steering_vector_column,
+                                            estimate_column=estimate_column, *args, **kwargs)
+
+        out_raw_pd = pd.concat([out_raw_pd, raw_pd], axis=0)
+        out_estimate_pd = pd.concat([out_estimate_pd, estimate_pd], axis=0)
+
+    return out_estimate_pd, out_raw_pd
+
+
+def window_danish(window_gnss_pd, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
+                  number_of_unknown:int|None=None, max_iter:int=20, delta:float=1e-7, time_column:str="unix_time",
+                  residuals_column:str="residuals_m", weight_column:str="weight", gnss_id_column:str="gnss_id",
+                  steering_vector_column:tuple=("e_x", "e_y", "e_z"),
+                  estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"),  *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Performs Danish FDE on a single timestamp.
+
+    The Danish method begins with a Global Test (GT). If the GT is failed, a Local Test (LT) will be carried out in
+    order to identify the faulty measurements. Once the outlier is identified by LT, the exclusion step is replaced by
+    the reweighting scheme. The variance of the suspected measurement will exponentially increase based on the
+    normalized residuals.
+
+    sigma²_{j+1} = sigma²_{0} . | e(w_{j}/th), if w_{j} > th
+                                | 1          , else
+
+    :param window_gnss_pd:
+    :param positioning_func:
+    :param sigma:
+    :param alpha:
+    :param number_of_unknown:
+    :param max_iter:
+    :param delta:
+    :param time_column:
+    :param residuals_column:
+    :param weight_column:
+    :param gnss_id_column:
+    :param steering_vector_column:
+    :param estimate_column:
+    :param args:
+    :param kwargs:
+    :return:
+    """
+    if sigma is not None:
+        window_gnss_pd[weight_column] = 1/(sigma**2)
+
+    # 1. Compute position
+    try:
+        estimate_pd, window_gnss_pd = positioning_func(window_gnss_pd, *args, **kwargs)
+    except:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # 2. Apply global test
+    if number_of_unknown is None:
+        local_number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
+    else:
+        local_number_of_unknown = number_of_unknown
+    window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha,
+                                      number_of_unknown=local_number_of_unknown, weight_column=weight_column,
+                                      time_column=time_column, residuals_column=residuals_column)
+    # Check if global test passed
+    if window_gnss_pd["valid_estimate"].all():
+        estimate_pd["valid_estimate"] = True
+        return estimate_pd, window_gnss_pd
+
+    w_0 = window_gnss_pd[weight_column]
+    last_estimate = np.vstack([estimate_pd[column].to_numpy() for column in estimate_column])
+    estimate = None
     for index in range(max_iter):
-        print(f"\n\nIteration {index}")
+        # 3. Apply local test
+        window_gnss_pd = test.local_test(window_gnss_pd, alpha=alpha, weight_column=weight_column,
+                                         time_column=time_column, residuals_column=residuals_column,
+                                         steering_vector_column=steering_vector_column)
 
-        # 1. Compute position
-        sub_pd = positioning_func(sub_pd, *positioning_func_args)
-        # get rid of non-valid baselines
-        mask = sub_pd["baseline"].isna()
-        out_pd = pd.concat([out_pd, sub_pd[mask]], ignore_index=True)
-        sub_pd = sub_pd[~mask]
-        # Check if FDE is finished
-        if len(sub_pd) == 0:
-            break
+        # 4. Check convergence
+        if estimate is not None:
+            converged = float(np.linalg.norm(estimate - last_estimate)) < delta
+            last_estimate = estimate
+            if converged:
+                estimate_pd["valid_estimate"] = True
+                window_gnss_pd["valid_estimate"] = True
+                break
 
-        # 2. Apply global test
-        sub_pd = global_test(sub_pd, sigma=sigma, alpha=alpha, num_min_meas=num_min_meas)
-        # Get rid of baseline estimates that passes global test
+        # 5. Reweighting
+        test_passed = window_gnss_pd["valid_estimate"].to_numpy()
+        test_statistic = window_gnss_pd["test_statistic"].to_numpy(dtype=float)
+        test_threshold = window_gnss_pd["test_threshold"].to_numpy(dtype=float)
+        window_gnss_pd[weight_column] = np.where(test_passed, 1, w_0/np.exp(test_statistic / test_threshold))
+
+        # 6. Recompute position
         try:
-            mask = (sub_pd["chi_2_passed"] == True) | (sub_pd["chi_2_passed"].isna())
+            estimate_pd, window_gnss_pd = positioning_func(window_gnss_pd, *args, **kwargs)
         except:
-            pass
-        out_pd = pd.concat([out_pd, sub_pd[mask]], ignore_index=True)
-        sub_pd = sub_pd[~mask]
-        # Check if FDE is finished
-        if len(sub_pd) == 0:
-            break
+            estimate_pd["valid_estimate"] = False
+            window_gnss_pd["valid_estimate"] = False
+            return estimate_pd, window_gnss_pd
 
-        # 3 Get local test statistics
-        sub_pd = local_test(sub_pd, sigma=sigma, alpha=alpha, num_min_meas=num_min_meas,
-                            steering_vector_column_name=steering_vector_column_name,
-                            weight_column_name=weight_column_name, residuals_column_name=residuals_column_name)
-        chi2_threshold = stats.chi2.ppf(1 - alpha, df=1)
+        estimate = np.vstack([estimate_pd[column].to_numpy() for column in estimate_column])
 
-        # 4 Reweighting
-        mask = sub_pd["normalized_residual"] > chi2_threshold
-        sub_pd.loc[mask, weight_column_name] = sub_pd.loc[mask, weight_column_name] / np.exp(sub_pd.loc[mask, "normalized_residual"]/chi2_threshold)
+        if pd.isna(estimate).any():
+            estimate_pd["valid_estimate"] = False
+            window_gnss_pd["valid_estimate"] = False
+            return estimate_pd, window_gnss_pd
 
-    out_pd = pd.concat([out_pd, sub_pd], ignore_index=True)
-    out_pd.sort_values("unix_time", inplace=True)
-    out_pd.reset_index(drop=True, inplace=True)
-    return out_pd
+    if not converged:
+        estimate_pd["valid_estimate"] = False
+        window_gnss_pd["valid_estimate"] = False
+
+    return estimate_pd, window_gnss_pd
 
 
 def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:float=0.05, max_iter:int= 20,
@@ -562,7 +647,8 @@ def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:
                                   "cov_bb3_rx_m", "cov_bb4_rx_m"), verbose:bool=False, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Iterative Reweighted Least Square (IRLS)
+    Performs Iterative Reweighted Least Square (IRLS) on a dataframe with multiple timestamps.
+
     ref: D. Medina et. al. Robust Statistics for GNSS Positioning under Harsh Conditions: A Useful Tool ?
 
     Cov(x̂) = σ² · (Hᵀ W H)⁻¹ · (Hᵀ W² H) · (Hᵀ W H)⁻¹
@@ -617,7 +703,8 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
                                          "cov_bb3_rx_m", "cov_bb4_rx_m"), *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Iterative Reweighted Least Square (IRLS)
+    Performs Iterative Reweighted Least Square (IRLS) on a single timestamp.
+
     ref: D. Medina et. al. Robust Statistics for GNSS Positioning under Harsh Conditions: A Useful Tool ?
 
     Cov(x̂) = σ² · (Hᵀ W H)⁻¹ · (Hᵀ W² H) · (Hᵀ W H)⁻¹
@@ -707,8 +794,8 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
 
     # 6. Perform global test
     window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha, number_of_unknown=number_of_unknowns,
-                                 weight_column=weight_column, time_column=time_column,
-                                 residuals_column=residuals_column)
+                                      weight_column=weight_column, time_column=time_column,
+                                      residuals_column=residuals_column)
     estimate_pd["valid_estimate"] = window_gnss_pd["valid_estimate"].iloc[0]
 
     return estimate_pd, window_gnss_pd

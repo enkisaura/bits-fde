@@ -49,15 +49,16 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
         else:
             W = np.diag(group[weight_column])
 
-        result, chi2_stat = window_global_test(residuals, W, alpha, number_of_unknown)
+        result, chi2_stat, chi2_threshold = window_global_test(residuals, W, alpha, number_of_unknown)
 
         gnss_pd.loc[group.index, "valid_estimate"] = result
         gnss_pd.loc[group.index, "test_statistic"] = float(chi2_stat)
+        gnss_pd.loc[group.index, "test_threshold"] = float(chi2_threshold)
 
     return gnss_pd
 
 def window_global_test(residuals:np.ndarray, W:np.ndarray, alpha:float, number_of_unknown:int) \
-        -> tuple[bool, np.ndarray]:
+        -> tuple[bool, np.ndarray, np.ndarray]:
     """
     Performs global test on a single timestamp.
 
@@ -80,7 +81,7 @@ def window_global_test(residuals:np.ndarray, W:np.ndarray, alpha:float, number_o
     # Threshold
     chi2_threshold = stats.chi2.ppf(1 - alpha, df=len(residuals) - number_of_unknown)
 
-    return bool(chi2_stat < chi2_threshold), chi2_stat
+    return bool(chi2_stat < chi2_threshold), chi2_stat, chi2_threshold
 
 
 def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.05,
@@ -126,14 +127,15 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
         G = np.vstack([group[column].to_numpy() for column in steering_vector_column])
         G = G.transpose()
 
-        valid_estimate, normalized_residuals  = window_local_test(residuals, W, G, alpha)
+        valid_estimate, normalized_residuals, chi2_threshold  = window_local_test(residuals, W, G, alpha)
 
         gnss_pd.loc[group.index, "valid_estimate"] = valid_estimate
         gnss_pd.loc[group.index, "test_statistic"] = normalized_residuals
+        gnss_pd.loc[group.index, "test_threshold"] = chi2_threshold
 
     return gnss_pd
 
-def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:float) -> tuple[np.ndarray, np.ndarray]:
+def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Performs local test on a single timestamp.
 
@@ -168,4 +170,4 @@ def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:fl
         if off_diag.size > 0 and r_diag[i] <= off_diag.max():
             valid_estimate[i] = np.nan
 
-    return valid_estimate, chi2_stat
+    return valid_estimate, chi2_stat, chi2_threshold
