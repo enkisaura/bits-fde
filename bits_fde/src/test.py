@@ -52,7 +52,7 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
         result, chi2_stat, chi2_threshold = window_global_test(residuals, W, alpha, number_of_unknown)
 
         gnss_pd.loc[group.index, "valid_estimate"] = result
-        gnss_pd.loc[group.index, "test_statistic"] = float(chi2_stat)
+        gnss_pd.loc[group.index, "test_statistic"] = float(chi2_stat.item())
         gnss_pd.loc[group.index, "test_threshold"] = float(chi2_threshold)
 
     return gnss_pd

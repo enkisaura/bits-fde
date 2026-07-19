@@ -1,5 +1,6 @@
 [project]
 name = "bits_fde"
+version = "0.0.1"
 authors = [
   {name = "Enki Saura", email = "esaura@ikosconsulting.com"},
 ]
@@ -7,9 +8,8 @@ maintainers = [
   {name = "Enki Saura", email = "esaura@ikosconsulting.com"}
 ]
 description = "Baguette in the sky module for Fault Detection and Exclusion "
-dynamic = ["version"]
 dependencies = [
-    "baguette_in_the_sky", # Available at https://github.com/enkisaura/Baguette-In-The-Sky.git
+    "baguette_in_the_sky>=0.1.0", # Available at https://github.com/enkisaura/Baguette-In-The-Sky.git
     "pandas",
     "numpy",
     "tqdm",

@@ -63,7 +63,7 @@ def hpl(gnss_pd: pd.DataFrame, sigma:float|None=None, alpha: float = 0.05, dof:i
         noise, bias, protection = window_hpl(d_major, G, W, residuals, alpha, dof)
 
         group["hpl_noise_m"] = noise
-        group["hpl_bias_m"] = float(bias)
+        group["hpl_bias_m"] = float(bias.item())
         group["hpl_m"] = protection
 
         out_pd = pd.concat([out_pd, group], axis=0)
