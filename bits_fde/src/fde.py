@@ -389,7 +389,7 @@ def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callab
                             alpha:float=0.05, max_iter:int=20, number_of_unknown:int|None=None,
                             gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
                             weight_column:str="weight", time_column:str="unix_time",
-                            residuals_column:str="residuals_m", redundancy_check:bool=True, *args, **kwargs) \
+                            residuals_column:str="residuals_m", *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Forward-Backward on a single timestamp.
@@ -412,7 +412,6 @@ def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callab
     :param weight_column: Name of the weight column
     :param time_column: Name of time column
     :param residuals_column: Name of pseudorange residuals column
-    :param redundancy_check: Set to False for Classic FDE
     :param args: args to be given to positioning_func
     :param kwargs: kwargs to be given to positioning_func
     :return: BITS pvt dataframe, BITS raw dataframe
@@ -554,40 +553,102 @@ def danish(gnss_pd: pd.DataFrame, positioning_func:Callable, positioning_func_ar
     return out_pd
 
 
-def irls(gnss_pd: pd.DataFrame, window_positioning_func:Callable, window_positioning_func_args: tuple = (),
-         a:float=1.345, max_iter:int= 50, delta:float=1e-7) -> pd.DataFrame:
+def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:float=0.05, max_iter:int= 20,
+         delta:float=1e-7,  steering_vector_column:tuple=("e_x", "e_y", "e_z"),
+         clock_bias_vector_column:tuple|None=("e_bbei", "e_bgal", "e_bglo", "e_bgps"),
+         estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
+         residuals_column:str="residuals_m", time_column:str="unix_time",
+         covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
+                                  "cov_bb3_rx_m", "cov_bb4_rx_m"), verbose:bool=False, *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Iterative Reweighted Least Square (IRLS)
     ref: D. Medina et. al. Robust Statistics for GNSS Positioning under Harsh Conditions: A Useful Tool ?
 
     Cov(x̂) = σ² · (Hᵀ W H)⁻¹ · (Hᵀ W² H) · (Hᵀ W H)⁻¹
+
+    :param gnss_pd:
+    :param positioning_func:
+    :param a:
+    :param alpha:
+    :param max_iter:
+    :param delta:
+    :param steering_vector_column:
+    :param clock_bias_vector_column:
+    :param estimate_column:
+    :param weight_column:
+    :param residuals_column:
+    :param time_column:
+    :param covariance_column:
+    :param verbose:
+    :param args:
+    :param kwargs:
+    :return:
     """
-    out_pd = pd.DataFrame()
+    out_raw_list = []
+    out_estimate_list = []
 
-    # Iterate over each timestamp
-    tqdm_desc = "Computing position using IRLS"
-    for _, sub_pd in tqdm(gnss_pd.groupby("unix_time"), total=len(gnss_pd["unix_time"].unique()), desc=tqdm_desc):
-            sub_pd = window_irls(sub_pd, window_positioning_func,
-                                 window_positioning_func_args=window_positioning_func_args,
-                                 a=a, max_iter=max_iter, delta=delta)
+    groups = gnss_pd.groupby(time_column, sort=True)
+    iterator = tqdm(groups, desc="Applying Iterative Reweighted Least Square") if verbose else groups
 
-            # Save result
-            out_pd = pd.concat([out_pd, sub_pd], ignore_index=True)
+    for _, group in iterator:
+        estimate_pd, raw_pd = (
+            window_irls(group, positioning_func, a=a, alpha=alpha,  max_iter=max_iter, delta=delta,
+                        steering_vector_column=steering_vector_column,
+                        clock_bias_vector_column=clock_bias_vector_column,  estimate_column=estimate_column,
+                        weight_column=weight_column, residuals_column=residuals_column, time_column=time_column,
+                        covariance_column=covariance_column, *args, **kwargs))
 
-    out_pd = global_test(out_pd, alpha = 0.05, num_min_meas = 5, weight_column = "weight")
-    out_pd.sort_values("unix_time", inplace=True)
-    out_pd.reset_index(drop=True, inplace=True)
-    return out_pd
+        out_raw_list.append(raw_pd)
+        out_estimate_list.append(estimate_pd)
+
+    out_raw_pd = pd.concat(out_raw_list, axis=0, ignore_index=True)
+    out_estimate_pd = pd.concat(out_estimate_list, axis=0, ignore_index=True)
+
+    return out_estimate_pd, out_raw_pd
 
 
-def window_irls(window: pd.DataFrame, window_positioning_func:Callable, window_positioning_func_args: tuple = (),
-                a:float=1.345, max_iter:int= 50, delta:float=1e-7) -> pd.DataFrame:
+def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:float=0.05,
+                max_iter:int= 20, delta:float=1e-7, steering_vector_column:tuple=("e_x", "e_y", "e_z"),
+                clock_bias_vector_column:tuple|None=("e_bbei", "e_bgal", "e_bglo", "e_bgps"),
+                estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
+                residuals_column:str="residuals_m", time_column:str="unix_time",
+                covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
+                                         "cov_bb3_rx_m", "cov_bb4_rx_m"), *args, **kwargs) \
+        -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Iterative Reweighted Least Square (IRLS)
+    ref: D. Medina et. al. Robust Statistics for GNSS Positioning under Harsh Conditions: A Useful Tool ?
+
+    Cov(x̂) = σ² · (Hᵀ W H)⁻¹ · (Hᵀ W² H) · (Hᵀ W H)⁻¹
+
+    :param window_gnss_pd:
+    :param positioning_func:
+    :param a:
+    :param alpha:
+    :param max_iter:
+    :param delta:
+    :param steering_vector_column:
+    :param clock_bias_vector_column:
+    :param estimate_column:
+    :param weight_column:
+    :param residuals_column:
+    :param time_column:
+    :param covariance_column:
+    :param args:
+    :param kwargs:
+    :return:
+    """
     last_estimate = None
     converged = False
     for iteration in range(max_iter):
-        # 1. Estimate position
-        window = window_positioning_func(window, *window_positioning_func_args)
-        estimate = window[["baseline_x", "baseline_y", "baseline_z"]].iloc[0].to_numpy()
+        # 1. Compute position
+        try:
+            estimate_pd, window_gnss_pd = positioning_func(window_gnss_pd, *args, **kwargs)
+        except:
+            return pd.DataFrame(), pd.DataFrame()
+        estimate = np.vstack([estimate_pd[column].to_numpy() for column in estimate_column])
+
         if pd.isna(estimate).any():
             break
 
@@ -599,76 +660,82 @@ def window_irls(window: pd.DataFrame, window_positioning_func:Callable, window_p
             break
 
         # 3. Update scale
-        residuals = window["residuals"].to_numpy()
+        residuals = window_gnss_pd[residuals_column].to_numpy()
         sigma = mad(residuals)
 
         # 4. Update weights
         normed_residuals = residuals / sigma
-        window["weight"] = huber_psi(normed_residuals, a) / normed_residuals
+        # Weight = loss_function/normed_residuals; if normed_residuals==0 -> weight = 1 (best possible weight)
+        weight_matrix = np.divide(
+            huber_psi(normed_residuals, a),
+            normed_residuals,
+            out=np.ones_like(normed_residuals, dtype=float),
+            where=(normed_residuals != 0)
+        )
+        window_gnss_pd[weight_column] = weight_matrix
 
-    if not pd.isna(estimate).any():
-        # Compute covariance matrix
-        # Build geometry matrix
-        ex = window["steering_vector_x_rx1"].to_numpy()
-        ey = window["steering_vector_y_rx1"].to_numpy()
-        ez = window["steering_vector_z_rx1"].to_numpy()
-        H = np.vstack((ex, ey, ez, np.ones_like(ex))).transpose()
+    if pd.isna(estimate).any():
+        estimate_pd["valid_estimate"] = False
+        window_gnss_pd["valid_estimate"] = False
+        return estimate_pd, window_gnss_pd
 
-        # Build weights
-        W = np.diag(window["weight"])
+    # 5. Compute covariance
+    # Build geometry matrix
+    G = np.vstack([window_gnss_pd[column].to_numpy() for column in steering_vector_column])
+    found_clock_bias_vector = False
+    if clock_bias_vector_column is not None:
+        for column in clock_bias_vector_column:
+            if column in window_gnss_pd.columns:
+                found_clock_bias_vector = True
+                G = np.vstack([G, window_gnss_pd[column].to_numpy()])
+    if not found_clock_bias_vector:
+        G = np.vstack([G, np.ones((1, G.shape[1]))])
+    G = G.transpose()
 
-        sandwich_bread = np.linalg.inv(H.transpose() @ W @ H)
-        sandwich_vegan_ham = (H.transpose() @ W ** 2 @ H)  # I'm a vegetarian
-        cov = sigma ** 2 * sandwich_bread @ sandwich_vegan_ham @ sandwich_bread
+    # Build weights
+    W = np.diag(window_gnss_pd[weight_column])
 
-        window["sigma_0"] = sigma
-        window["covariance_x"] = float(cov[0][0])
-        window["covariance_y"] = float(cov[1][1])
-        window["covariance_z"] = float(cov[2][2])
-        window["covariance_b"] = float(cov[3][3])
-        window["uncertainty"] = float(np.sqrt(np.trace(cov[:3, :3])))
+    sandwich_bread = np.linalg.inv(G.transpose() @ W @ G)
+    sandwich_vegan_ham = (G.transpose() @ W ** 2 @ G)  # I'm a vegetarian
+    cov = sigma ** 2 * sandwich_bread @ sandwich_vegan_ham @ sandwich_bread
 
-        window["weight"] = window["weight"] / sigma**2
-        window["converged"] = converged
+    number_of_unknowns = G.shape[1]
+    for i in range(number_of_unknowns):
+        window_gnss_pd[covariance_column[i]] = float(cov[i][i])
 
-        return window
+    window_gnss_pd[weight_column] = window_gnss_pd[weight_column] / sigma**2
+
+    # 6. Perform global test
+    window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha, number_of_unknown=number_of_unknowns,
+                                 weight_column=weight_column, time_column=time_column,
+                                 residuals_column=residuals_column)
+    estimate_pd["valid_estimate"] = window_gnss_pd["valid_estimate"].iloc[0]
+
+    return estimate_pd, window_gnss_pd
 
 def mad(x: np.ndarray, c_m:float=1.4826) -> float:
     """
-    Estimation robuste de l'écart-type par la MAD normalisée.
+    Median Absolute Deviation (MAD) used as standard deviation estimator
 
-        σ̂_MAD(x) = c_m * Med(|x - Med(x)|)
+    σ̂_MAD(x) = c_m * Med(|x - Med(x)|)
 
-    avec c_m = 1.4826  pour cohérence avec σ sous gaussienne.
+    with c_m = 1.4826  for coherence with Gaussian distribution
 
-    Paramètres
-    ----------
-    x : (n,)  vecteur d'observations
-
-    Retourne
-    --------
-    σ̂_MAD : float  estimation robuste de σ
+    :param x: Normalized residuals
+    :param c_m:
+    :return:
     """
     x = np.asarray(x, dtype=float).ravel()
     return c_m * np.median(np.abs(x - np.median(x)))
 
 def huber_psi(x: np.ndarray, a: float=1.345) -> np.ndarray:
     """
-    Fonction d'influence de Huber ψ_a^H(x).
+    Huber's loss function
 
-        ψ_a^H(x) = x           si |x| ≤ a
-                   a * sign(x) si |x| > a
-
-    Paramètres
-    ----------
-    x : (n,)  résidus normalisés
-    a : float  seuil de Huber (typiquement 1.345 → 95% efficacité)
-
-    Retourne
-    --------
-    psi : (n,)
+    :param x: Normalized residuals
+    :param a: Huber threshold
+    :return:
     """
-    #x = np.asarray(x, dtype=float).ravel()
     return np.where(np.abs(x) <= a, x, a * np.sign(x))
 
 
