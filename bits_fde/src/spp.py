@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from typing import Callable
 from tqdm import tqdm
 
 import bits
@@ -29,21 +28,15 @@ def global_test(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
 
     # Compute position using bits' SPP
     pd_gnss_pvt, pd_gnss_raw = (
-        bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,  ephem_filepath=ephem_filepath,
+        bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,  ephem_filepath=ephem_filepath,
                                        approx_pvt=approx_pvt, verbose=verbose))
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-    pd_gnss_pvt["unix_time"] = pd_gnss_pvt["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # Apply integrity monitoring for each timestamp group
     out_raw_pd = pd.DataFrame()
-    for timestamp, group in tqdm(pd_gnss_raw.groupby("unix_time", sort=True), desc="Applying global test"):
+    for timestamp, group in tqdm(pd_gnss_raw.groupby("time", sort=True), desc="Applying global test"):
         # Get residuals
         residuals = group["residuals_m"].to_numpy().reshape(-1, 1)
 
@@ -65,7 +58,7 @@ def global_test(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
 
         # Compute HPL
         try:
-            cov = pd_gnss_pvt[pd_gnss_pvt["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_pvt[pd_gnss_pvt["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -77,14 +70,14 @@ def global_test(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
         out_raw_pd = pd.concat([out_raw_pd, group], axis=0)
 
     # Add test results to PVT dataframe
-    pd_gnss_pvt = pd.merge_asof(pd_gnss_pvt, out_raw_pd[["unix_time", "valid_estimate", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_pvt = pd.merge_asof(pd_gnss_pvt, out_raw_pd[["time", "valid_estimate", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_pvt, out_raw_pd
 
 def classic_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=None,
                 pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None, max_iter:int=20,
-                weight_column:str="weight", time_column:str="unix_time", verbose=False) \
+                weight_column:str="weight", time_column:str="time", verbose=False) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and a classic FDE
@@ -105,30 +98,22 @@ def classic_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
         pd_gnss_raw[weight_column] = 1/(sigma**2)
 
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
     pd_gnss_estimate, pd_gnss_raw = (
-        fde.classic(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
+        fde.classic(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
                     steering_vector_column=("e_x", "e_y", "e_z"), weight_column=weight_column, time_column=time_column,
                     residuals_column="residuals_m", verbose=verbose))
-
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -146,7 +131,7 @@ def classic_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -156,14 +141,14 @@ def classic_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw
 
 def subset_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=None,
                 pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None,
-                weight_column:str="weight", time_column:str="unix_time", verbose=False, max_depth:int|None=None) \
+                weight_column:str="weight", time_column:str="time", verbose=False, max_depth:int|None=None) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and a Subset Test
@@ -184,29 +169,21 @@ def subset_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|Non
         pd_gnss_raw[weight_column] = 1/(sigma**2)
 
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
     pd_gnss_estimate, pd_gnss_raw = (
-        fde.subset_test(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha, weight_column=weight_column,
+        fde.subset_test(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha, weight_column=weight_column,
                         time_column=time_column, residuals_column="residuals_m", verbose=verbose, max_depth=max_depth))
-
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -224,7 +201,7 @@ def subset_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|Non
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -234,15 +211,15 @@ def subset_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|Non
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw
 
 
 def iterative_local_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=None,
                              pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None, max_iter:int=20,
-                             weight_column:str="weight", time_column:str="unix_time", verbose=False) \
+                             weight_column:str="weight", time_column:str="time", verbose=False) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and an Iterative Local Test FDE
@@ -263,30 +240,22 @@ def iterative_local_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:
         pd_gnss_raw[weight_column] = 1/(sigma**2)
 
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
     pd_gnss_estimate, pd_gnss_raw = (
-        fde.iterative_local_test(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
+        fde.iterative_local_test(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
                                  steering_vector_column=("e_x", "e_y", "e_z"), weight_column=weight_column,
                                  time_column=time_column, residuals_column="residuals_m", verbose=verbose))
-
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -304,7 +273,7 @@ def iterative_local_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -314,14 +283,14 @@ def iterative_local_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw
 
 def forward_backward_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=None,
                              pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None, max_iter:int=20,
-                             weight_column:str="weight", time_column:str="unix_time", verbose=False) \
+                             weight_column:str="weight", time_column:str="time", verbose=False) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and a Forward-Backward FDE
@@ -342,30 +311,22 @@ def forward_backward_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:floa
         pd_gnss_raw[weight_column] = 1/(sigma**2)
 
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
     pd_gnss_estimate, pd_gnss_raw = (
-        fde.forward_backward(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
+        fde.forward_backward(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
                              steering_vector_column=("e_x", "e_y", "e_z"), weight_column=weight_column,
                              time_column=time_column, residuals_column="residuals_m", verbose=verbose))
-
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -383,7 +344,7 @@ def forward_backward_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:floa
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -393,13 +354,13 @@ def forward_backward_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:floa
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw
 
 def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=None, pd_ephemeris:pd.DataFrame|None=None,
-               ephem_filepath:str|None=None, max_iter:int=20, weight_column:str="weight", time_column:str="unix_time",
+               ephem_filepath:str|None=None, max_iter:int=20, weight_column:str="weight", time_column:str="time",
                verbose=False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and a Danish FDE
@@ -420,30 +381,22 @@ def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=Non
         pd_gnss_raw[weight_column] = 1/(sigma**2)
 
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
     pd_gnss_estimate, pd_gnss_raw = (
-        fde.danish(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
+        fde.danish(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha, max_iter=max_iter,
                    steering_vector_column=("e_x", "e_y", "e_z"), weight_column=weight_column, time_column=time_column,
                    residuals_column="residuals_m", verbose=verbose))
-
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -461,7 +414,7 @@ def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=Non
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -471,14 +424,14 @@ def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=Non
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw
 
 def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
              pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None, max_iter:int=20,
-             weight_column:str="weight", time_column:str="unix_time", verbose=False) -> tuple[pd.DataFrame, pd.DataFrame]:
+             weight_column:str="weight", time_column:str="time", verbose=False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and an Iterative Reweighted Least Square FDE
 
@@ -493,30 +446,22 @@ def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
     :return: BITS pvt dataframe, BITS raw dataframe
     """
     # Compute position using bits' SPP
-    pd_gnss_estimate, pd_gnss_raw = bits.spp.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
+    pd_gnss_estimate, pd_gnss_raw = bits.single_point_positioning.get_position_estimate(pd_gnss_raw, pd_ephemeris=pd_ephemeris,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
-    # Add unix_time for easier sorting
-    pd_gnss_raw["unix_time"] = pd_gnss_raw["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
-
     # Clean up
-    pd_gnss_raw = pd_gnss_raw.sort_values("unix_time").reset_index(drop=True)
+    pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
-    pd_gnss_estimate, pd_gnss_raw = fde.irls(pd_gnss_raw, bits.spp.get_approx_position_estimate, alpha=alpha,
+    pd_gnss_estimate, pd_gnss_raw = fde.irls(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha,
                                              max_iter=max_iter, steering_vector_column=("e_x", "e_y", "e_z"),
                                              weight_column=weight_column, time_column=time_column,
                                              residuals_column="residuals_m", verbose=verbose)
 
-    pd_gnss_estimate["unix_time"] = pd_gnss_estimate["time"].apply(
-        lambda gnss_timestamp: gnss_timestamp.pd_timestamp().timestamp())
-
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at
     # each iteration.
-    for timestamp, group in pd_gnss_raw.groupby("unix_time", sort=True):
+    for timestamp, group in pd_gnss_raw.groupby("time", sort=True):
         # Keep only valid estimates
         group = group[group["valid_estimate"] == True]
 
@@ -534,7 +479,7 @@ def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
         number_of_unknown = 3 + len(pd_gnss_raw["gnss_id"].unique())
 
         try:
-            cov = pd_gnss_estimate[pd_gnss_estimate["unix_time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
+            cov = pd_gnss_estimate[pd_gnss_estimate["time"] == timestamp][["cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m"]].iloc[0]
             d_major = np.sqrt(cov.sum())
             noise, bias, protection = hpl.window_hpl(d_major, G, W, residuals, alpha, dof=number_of_unknown)
 
@@ -544,7 +489,7 @@ def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
             print(txt)
 
     # Add test results to PVT dataframe
-    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["unix_time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
-                                     on="unix_time", direction="nearest", tolerance=0.1)
+    pd_gnss_estimate = pd.merge_asof(pd_gnss_estimate,  pd_gnss_raw[["time", "hpl_noise_m", "hpl_bias_m", "hpl_m"]],
+                                     on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     return pd_gnss_estimate, pd_gnss_raw

@@ -17,7 +17,7 @@ https://hal.science/tel-01959797v1
 def classic(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
             max_iter:int=20, number_of_unknown:int|None=None, gnss_id_column:str="gnss_id",
             steering_vector_column:tuple=("e_x", "e_y", "e_z"), weight_column:str="weight",
-            time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+            time_column:str="time",  residuals_column:str="residuals_m", verbose:bool=False,
             *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Classic method on a dataframe with multiple timestamps.
@@ -63,7 +63,7 @@ def classic(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=No
 
 def subset_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
                 number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
-                time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+                time_column:str="time",  residuals_column:str="residuals_m", verbose:bool=False,
                 max_depth:int|None=None, *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Subset Test on a dataframe with multiple timestamps.
@@ -113,7 +113,7 @@ def subset_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|Non
 
 def window_subset_test(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
                        number_of_unknown:int|None=None, gnss_id_column:str="gnss_id", weight_column:str="weight",
-                       time_column:str="unix_time",  residuals_column:str="residuals_m", max_depth:int|None=None, *args, **kwargs) \
+                       time_column:str="time",  residuals_column:str="residuals_m", max_depth:int|None=None, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Subset Test on a single timestamp.
@@ -212,7 +212,7 @@ def window_subset_test(window_gnss_pd:pd.DataFrame, positioning_func:Callable, s
 def iterative_local_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
             max_iter:int=20, number_of_unknown:int|None=None, gnss_id_column:str="gnss_id",
             steering_vector_column:tuple=("e_x", "e_y", "e_z"), weight_column:str="weight",
-            time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+            time_column:str="time",  residuals_column:str="residuals_m", verbose:bool=False,
             *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Iterative Local Test on a dataframe with multiple timestamps.
@@ -260,7 +260,7 @@ def iterative_local_test(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:
 def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None,
                                 alpha:float=0.05, max_iter:int=20, number_of_unknown:int|None=None,
                                 gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
-                                weight_column:str="weight", time_column:str="unix_time",
+                                weight_column:str="weight", time_column:str="time",
                                 residuals_column:str="residuals_m", redundancy_check:bool=True, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -338,7 +338,7 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
 def forward_backward(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
                      max_iter:int=20, number_of_unknown:int|None=None, gnss_id_column:str="gnss_id",
                      steering_vector_column:tuple=("e_x", "e_y", "e_z"), weight_column:str="weight",
-                     time_column:str="unix_time",  residuals_column:str="residuals_m", verbose:bool=False,
+                     time_column:str="time",  residuals_column:str="residuals_m", verbose:bool=False,
                      *args, **kwargs) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Forward-Backward on a dataframe with multiple timestamps.
@@ -388,7 +388,7 @@ def forward_backward(gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:floa
 def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callable, sigma:float|None=None,
                             alpha:float=0.05, max_iter:int=20, number_of_unknown:int|None=None,
                             gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
-                            weight_column:str="weight", time_column:str="unix_time",
+                            weight_column:str="weight", time_column:str="time",
                             residuals_column:str="residuals_m", *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -484,7 +484,7 @@ def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callab
 
 
 def danish(gnss_pd, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05, number_of_unknown:int|None=None,
-           max_iter:int=20, delta:float=1e-7, time_column:str="unix_time", residuals_column:str="residuals_m",
+           max_iter:int=20, delta:float=1e-7, time_column:str="time", residuals_column:str="residuals_m",
            weight_column:str="weight", gnss_id_column:str="gnss_id", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
            estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), verbose=False, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -537,7 +537,7 @@ def danish(gnss_pd, positioning_func:Callable, sigma:float|None=None, alpha:floa
 
 
 def window_danish(window_gnss_pd, positioning_func:Callable, sigma:float|None=None, alpha:float=0.05,
-                  number_of_unknown:int|None=None, max_iter:int=20, delta:float=1e-7, time_column:str="unix_time",
+                  number_of_unknown:int|None=None, max_iter:int=20, delta:float=1e-7, time_column:str="time",
                   residuals_column:str="residuals_m", weight_column:str="weight", gnss_id_column:str="gnss_id",
                   steering_vector_column:tuple=("e_x", "e_y", "e_z"),
                   estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"),  *args, **kwargs) \
@@ -642,7 +642,7 @@ def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:
          delta:float=1e-7,  steering_vector_column:tuple=("e_x", "e_y", "e_z"),
          clock_bias_vector_column:tuple|None=("e_bbei", "e_bgal", "e_bglo", "e_bgps"),
          estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
-         residuals_column:str="residuals_m", time_column:str="unix_time",
+         residuals_column:str="residuals_m", time_column:str="time",
          covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
                                   "cov_bb3_rx_m", "cov_bb4_rx_m"), verbose:bool=False, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -698,7 +698,7 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
                 max_iter:int= 20, delta:float=1e-7, steering_vector_column:tuple=("e_x", "e_y", "e_z"),
                 clock_bias_vector_column:tuple|None=("e_bbei", "e_bgal", "e_bglo", "e_bgps"),
                 estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
-                residuals_column:str="residuals_m", time_column:str="unix_time",
+                residuals_column:str="residuals_m", time_column:str="time",
                 covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
                                          "cov_bb3_rx_m", "cov_bb4_rx_m"), *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:

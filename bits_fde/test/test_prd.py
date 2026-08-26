@@ -26,10 +26,10 @@ sigma=1.5
 gt_uncertainty = 2
 
 # Parse data
-rx1_raw_pd = bits.parsers.gnss_raw.rinex_obs(rx1_raw_filepath)
-rx2_raw_pd = bits.parsers.gnss_raw.rinex_obs(rx2_raw_filepath)
-rx1_nmea_pd = bits.parsers.nmea.gga(rx1_nmea_filepath)
-rx2_nmea_pd = bits.parsers.nmea.gga(rx2_nmea_filepath)
+rx1_raw_pd = bits.parse.raw.rinex(rx1_raw_filepath)
+rx2_raw_pd = bits.parse.raw.rinex(rx2_raw_filepath)
+rx1_nmea_pd = bits.parse.pvt.gga(rx1_nmea_filepath)
+rx2_nmea_pd = bits.parse.pvt.gga(rx2_nmea_filepath)
 
 rx1_raw_pd["weight"] = 1/(sigma**2)
 
