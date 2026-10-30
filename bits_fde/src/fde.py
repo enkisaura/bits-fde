@@ -782,15 +782,20 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
     # Build weights
     W = np.diag(window_gnss_pd[weight_column])
 
+    #sandwich_bread = np.linalg.inv(G.transpose() @ W @ G)
+    #sandwich_vegan_ham = (G.transpose() @ W ** 2 @ G)  # I'm a vegetarian
+    #cov = sigma ** 2 * sandwich_bread @ sandwich_vegan_ham @ sandwich_bread
+
     sandwich_bread = np.linalg.inv(G.transpose() @ W @ G)
-    sandwich_vegan_ham = (G.transpose() @ W ** 2 @ G)  # I'm a vegetarian
-    cov = sigma ** 2 * sandwich_bread @ sandwich_vegan_ham @ sandwich_bread
+    var_y = np.eye(W.shape[0]) * sigma**2
+    cov = sandwich_bread @ G.transpose() @ W @ var_y @ W @ G @ sandwich_bread
 
     number_of_unknowns = G.shape[1]
     for i in range(number_of_unknowns):
         window_gnss_pd[covariance_column[i]] = float(cov[i][i])
 
-    window_gnss_pd[weight_column] = window_gnss_pd[weight_column] / sigma**2
+    #window_gnss_pd[weight_column] = window_gnss_pd[weight_column] / sigma**2
+    window_gnss_pd[weight_column] = sigma**2
 
     # 6. Perform global test
     window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha, number_of_unknown=number_of_unknowns,

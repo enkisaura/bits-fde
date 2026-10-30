@@ -32,6 +32,7 @@ def global_test(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
                                        approx_pvt=approx_pvt, verbose=verbose))
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # Apply integrity monitoring for each timestamp group
@@ -102,6 +103,8 @@ def classic_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=No
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
@@ -173,6 +176,7 @@ def subset_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|Non
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
@@ -244,6 +248,7 @@ def iterative_local_test_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
@@ -315,6 +320,7 @@ def forward_backward_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:floa
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
@@ -385,6 +391,7 @@ def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=Non
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
@@ -450,6 +457,7 @@ def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
                                                                    ephem_filepath=ephem_filepath, verbose=verbose)
 
     # Clean up
+    pd_gnss_raw.dropna(inplace=True)
     pd_gnss_raw = pd_gnss_raw.sort_values("time").reset_index(drop=True)
 
     # FDE
