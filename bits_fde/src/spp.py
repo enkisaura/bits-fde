@@ -438,7 +438,7 @@ def danish_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05, sigma:float|None=Non
 
 def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
              pd_ephemeris:pd.DataFrame|None=None, ephem_filepath:str|None=None, max_iter:int=20,
-             weight_column:str="weight", time_column:str="time", verbose=False) -> tuple[pd.DataFrame, pd.DataFrame]:
+             weight_column:str="weight", time_column:str="time", max_sigma:float=20, verbose=False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Computes position using BITS and an Iterative Reweighted Least Square FDE
 
@@ -464,7 +464,7 @@ def irls_fde(pd_gnss_raw: pd.DataFrame, alpha:float=0.05,
     pd_gnss_estimate, pd_gnss_raw = fde.irls(pd_gnss_raw, bits.single_point_positioning.get_approx_position_estimate, alpha=alpha,
                                              max_iter=max_iter, steering_vector_column=("e_x", "e_y", "e_z"),
                                              weight_column=weight_column, time_column=time_column,
-                                             residuals_column="residuals_m", verbose=verbose)
+                                             residuals_column="residuals_m", max_sigma=max_sigma, verbose=verbose)
 
     # Compute HPL
     # Since the number of used constellations may change, we need to use window_hpl and recompute number_of_unknown at

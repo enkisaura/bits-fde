@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from scipy import stats
 from itertools import combinations
 from typing import Callable
 from tqdm import tqdm
@@ -650,7 +649,7 @@ def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:
          estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
          residuals_column:str="residuals_m", time_column:str="time",
          covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
-                                  "cov_bb3_rx_m", "cov_bb4_rx_m"), verbose:bool=False, *args, **kwargs) \
+                                  "cov_bb3_rx_m", "cov_bb4_rx_m"), max_sigma:float=20, verbose:bool=False, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Iterative Reweighted Least Square (IRLS) on a dataframe with multiple timestamps.
@@ -689,7 +688,7 @@ def irls(gnss_pd: pd.DataFrame, positioning_func:Callable, a:float=1.345, alpha:
                         steering_vector_column=steering_vector_column,
                         clock_bias_vector_column=clock_bias_vector_column,  estimate_column=estimate_column,
                         weight_column=weight_column, residuals_column=residuals_column, time_column=time_column,
-                        covariance_column=covariance_column, *args, **kwargs))
+                        covariance_column=covariance_column, max_sigma=max_sigma, *args, **kwargs))
 
         out_raw_list.append(raw_pd)
         out_estimate_list.append(estimate_pd)
@@ -706,7 +705,7 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
                 estimate_column:tuple=("x_rx_m", "y_rx_m", "z_rx_m"), weight_column:str="weight",
                 residuals_column:str="residuals_m", time_column:str="time",
                 covariance_column:tuple=("cov_xx_rx_m", "cov_yy_rx_m", "cov_zz_rx_m", "cov_bb1_rx_m", "cov_bb2_rx_m",
-                                         "cov_bb3_rx_m", "cov_bb4_rx_m"), *args, **kwargs) \
+                                         "cov_bb3_rx_m", "cov_bb4_rx_m"), max_sigma:float=20, *args, **kwargs) \
         -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Performs Iterative Reweighted Least Square (IRLS) on a single timestamp.
@@ -800,14 +799,27 @@ def window_irls(window_gnss_pd: pd.DataFrame, positioning_func:Callable, a:float
     for i in range(number_of_unknowns):
         window_gnss_pd[covariance_column[i]] = float(cov[i][i])
 
+    window_gnss_pd["sigma_m"] = sigma
+
+    # Check validity
+    valid_sat_count = (window_gnss_pd["weight"] == 1).sum()
+    valid_sat = valid_sat_count > number_of_unknowns
+    valid_sigma = sigma < max_sigma
+
+    valid_conditions = valid_sat & valid_sigma
+
+    estimate_pd["valid_estimate"] = valid_conditions
+    window_gnss_pd["valid_estimate"] = valid_conditions
+
     #window_gnss_pd[weight_column] = window_gnss_pd[weight_column] / sigma**2
-    window_gnss_pd[weight_column] = sigma**2
+
+    #window_gnss_pd[weight_column] = sigma**2
 
     # 6. Perform global test
-    window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha, number_of_unknown=number_of_unknowns,
-                                      weight_column=weight_column, time_column=time_column,
-                                      residuals_column=residuals_column)
-    estimate_pd["valid_estimate"] = window_gnss_pd["valid_estimate"].iloc[0]
+    #window_gnss_pd = test.global_test(window_gnss_pd, alpha=alpha, number_of_unknown=number_of_unknowns,
+    #                                  weight_column=weight_column, time_column=time_column,
+    #                                  residuals_column=residuals_column)
+    #estimate_pd["valid_estimate"] = window_gnss_pd["valid_estimate"].iloc[0]
 
     return estimate_pd, window_gnss_pd
 

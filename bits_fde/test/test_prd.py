@@ -1,9 +1,5 @@
-import os
-from unittest.mock import inplace
-
 import pandas as pd
 import numpy as np
-import bits
 from bits import parse
 from bits.src.utils import get_example_data_filepath, fast_parse
 import bits_prd # Available at https://github.com/enkisaura/bits-prd.git
