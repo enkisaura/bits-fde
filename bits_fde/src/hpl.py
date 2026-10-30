@@ -12,7 +12,7 @@ https://hal.science/hal-01757326v2
 
 def hpl(gnss_pd: pd.DataFrame, sigma:float|None=None, alpha: float = 0.05, dof:int=4,
         uncertainty_column:str="uncertainty_m", steering_vector_column:tuple=("e_x", "e_y", "e_z"),
-        weight_column:str="weight", time_column:str="unix_time",  residuals_column:str="residuals_m") -> pd.DataFrame:
+        weight_column:str="weight", time_column:str="time",  residuals_column:str="residuals_m") -> pd.DataFrame:
     """
     Computes protection level for every timestamp of a dataframe
 
@@ -38,11 +38,13 @@ def hpl(gnss_pd: pd.DataFrame, sigma:float|None=None, alpha: float = 0.05, dof:i
     :param residuals_column: Name of pseudorange residuals column
     :return: BITS raw dataframe with computed hpl
     """
-    gnss_pd = gnss_pd.sort_values("unix_time").reset_index(drop=True) # Clean up
+    gnss_pd = gnss_pd.sort_values("time").reset_index(drop=True) # Clean up
 
     # Apply integrity monitoring for each timestamp group
     out_pd = pd.DataFrame()
     for _, group in tqdm(gnss_pd.groupby(time_column, sort=True), desc="Computing protection level"):
+        if group.shape[0] < dof:
+            continue
         # Build d_major
         d_major = group[uncertainty_column].to_numpy().ravel()
 

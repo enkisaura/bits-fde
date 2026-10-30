@@ -1,7 +1,11 @@
 import os
+from unittest.mock import inplace
+
 import pandas as pd
 import numpy as np
 import bits
+from bits import parse
+from bits.src.utils import get_example_data_filepath, fast_parse
 import bits_prd # Available at https://github.com/enkisaura/bits-prd.git
 
 from bits_fde.src import test, fde, hpl
@@ -14,86 +18,94 @@ Usage: Used from pytest
     python -m pytest -v
 """
 
-data_filepath = os.path.join(os.getcwd(), "bits_fde", "test", "data")
-rx1_raw_filepath = os.path.join(data_filepath, "RX0100FRA_R_20261241729_00U_01S_MO.rnx")
-rx2_raw_filepath = os.path.join(data_filepath, "RX0200FRA_R_20261241729_00U_01S_MO.rnx")
-rx1_nmea_filepath = os.path.join(data_filepath, "RX01_nmea.txt")
-rx2_nmea_filepath = os.path.join(data_filepath, "RX02_nmea.txt")
-ephemeris_filepath = os.path.join(data_filepath, "TLSG00FRA_R_20261240000_01D_MN.rnx")
+# Parse data
+rx1_raw_pd = fast_parse(get_example_data_filepath("raw", rover_type="fixed")[0], parse.raw.rinex)
+rx1_nmea_pd = fast_parse(get_example_data_filepath("pvt", rover_type="fixed")[0], parse.pvt.rmc)
+rx2_raw_pd = fast_parse(get_example_data_filepath("raw", rover_type="circular")[0], parse.raw.rinex)
+rx2_nmea_pd = fast_parse(get_example_data_filepath("pvt", rover_type="circular")[0], parse.pvt.rmc)
+ephemeris_df = fast_parse(get_example_data_filepath("ephemeris")[0], parse.ephemeris.rinex)
 
 alpha=0.05
-sigma=1.5
-gt_uncertainty = 2
-
-# Parse data
-rx1_raw_pd = bits.parse.raw.rinex(rx1_raw_filepath)
-rx2_raw_pd = bits.parse.raw.rinex(rx2_raw_filepath)
-rx1_nmea_pd = bits.parse.pvt.gga(rx1_nmea_filepath)
-rx2_nmea_pd = bits.parse.pvt.gga(rx2_nmea_filepath)
+sigma=0.69
+gt_uncertainty = 0
 
 rx1_raw_pd["weight"] = 1/(sigma**2)
 
-def test_global_test():
+def test_global_test(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
+
+    raw_pd.dropna(inplace=True)
 
     # Global test
     raw_pd = test.global_test(raw_pd, sigma=sigma, alpha=alpha, number_of_unknown=4, weight_column="weight",
-                             time_column="unix_time", residuals_column="residuals_m")
+                             time_column="time", residuals_column="residuals_m")
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     cov = raw_pd[["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
     d_major = np.sqrt(cov.sum(axis=1))
     raw_pd["uncertainty_m"] = d_major
     raw_pd = hpl.hpl(raw_pd, sigma=sigma, alpha=alpha, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, raw_pd[["unix_time", "valid_estimate", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, raw_pd[["time", "valid_estimate", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for Global Test:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_classic_fde():
+    return report
+
+def test_classic_fde(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
+
+    raw_pd.dropna(inplace=True)
 
     # Classic FDE
     baseline_pd, raw_pd = (
         fde.classic(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline, alpha=alpha, sigma=sigma,
                     steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), max_iter=20 , number_of_unknown=4,
-                    verbose=True, mode="sd"))
+                    verbose=verbose, mode="sd"))
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -101,46 +113,56 @@ def test_classic_fde():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, sigma=sigma, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for Classic FDE:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_subset_testing():
+    return report
+
+def test_subset_testing(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
 
     # FDE
     baseline_pd, raw_pd = (
         fde.subset_test(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline, alpha=alpha, sigma=sigma,
-                        number_of_unknown=4, verbose=True, max_depth=2, mode="sd"))
+                        number_of_unknown=4, verbose=verbose, max_depth=2, mode="sd"))
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -148,47 +170,57 @@ def test_subset_testing():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, sigma=sigma, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for Subset testing:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_iterative_local_test_fde():
+    return report
+
+def test_iterative_local_test_fde(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
 
     # FDE
     baseline_pd, raw_pd = (
         fde.iterative_local_test(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline, alpha=alpha,
                                  sigma=sigma, steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), max_iter=20 ,
-                                 number_of_unknown=4, verbose=True, mode="sd"))
+                                 number_of_unknown=4, verbose=verbose, mode="sd"))
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -196,47 +228,57 @@ def test_iterative_local_test_fde():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, sigma=sigma, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for iterative local test:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_forward_backward_fde():
+    return report
+
+def test_forward_backward_fde(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
 
     # FDE
     baseline_pd, raw_pd = fde.forward_backward(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline,
                                                alpha=alpha, sigma=sigma,
                                                steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), max_iter=20,
-                                               number_of_unknown=4, verbose=True, mode="sd")
+                                               number_of_unknown=4, verbose=verbose, mode="sd")
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -244,47 +286,57 @@ def test_forward_backward_fde():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, sigma=sigma, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for Forward-backward:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_danish_fde():
+    return report
+
+def test_danish_fde(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
 
     # FDE
     baseline_pd, raw_pd = fde.danish(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline, alpha=alpha,
                                      sigma=sigma, steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"),
                                      estimate_column=("bx_rx_m", "by_rx_m", "bz_rx_m"), max_iter=20,
-                                     number_of_unknown=4, verbose=True, mode="sd")
+                                     number_of_unknown=4, verbose=verbose, mode="sd")
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -292,47 +344,57 @@ def test_danish_fde():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, sigma=sigma, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for Danish:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
-def test_irls():
+    return report
+
+def test_irls(verbose=False):
     # Compute baseline
     baseline_pd, raw_pd = bits_prd.code_prd.compute_baseline(rx_obs_pd=rx1_raw_pd, rx2_obs_pd=rx2_raw_pd,
-                                                             compute_dd=False, ephemeris_filepath=ephemeris_filepath,
+                                                             compute_dd=False, ephemeris_pd=ephemeris_df,
                                                              pos_pd_rx1=rx1_nmea_pd, pos_pd_rx2=rx2_nmea_pd)
 
     # FDE
     baseline_pd, raw_pd = fde.irls(raw_pd, positioning_func=bits_prd.code_prd.window_compute_baseline, alpha=alpha,
                                    steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), estimate_column=("bx_rx_m", "by_rx_m", "bz_rx_m"),
-                                   clock_bias_vector_column=None, max_iter=20, verbose=True,
+                                   clock_bias_vector_column=None, max_iter=20, verbose=verbose,
                                    mode="sd")
 
     # HPL
-    raw_pd["unix_time"] = raw_pd["unix_time"].astype(float)
-    baseline_pd["unix_time"] = baseline_pd["unix_time"].astype(float)
-    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["unix_time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
-                           on="unix_time", direction="nearest", tolerance=0.1)
+    raw_pd["time"] = raw_pd["time"].astype("datetime64[ns]")
+    baseline_pd["time"] = baseline_pd["time"].astype("datetime64[ns]")
+    raw_pd = pd.merge_asof(raw_pd, baseline_pd[["time", "cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]],
+                           on="time", direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     valid_mask = raw_pd["valid_estimate"] == True
     valid_raw_pd = raw_pd[valid_mask]
     cov = raw_pd[valid_mask][["cov_bx_rx_m", "cov_by_rx_m", "cov_bz_rx_m"]].astype(float)
@@ -340,35 +402,49 @@ def test_irls():
     valid_raw_pd["uncertainty_m"] = d_major
     valid_raw_pd = hpl.hpl(valid_raw_pd, alpha=0.05, dof=4, uncertainty_column= "uncertainty_m",
                      steering_vector_column=("e_x_rx1", "e_y_rx1", "e_z_rx1"), weight_column="weight",
-                     time_column="unix_time", residuals_column="residuals_m")
+                     time_column="time", residuals_column="residuals_m")
 
     # Add results to baseline_pd
-    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["unix_time", "hpl_m"]], on="unix_time",
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, valid_raw_pd[["time", "hpl_m"]], on="time",
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     # Compute ground_truth
-    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="unix_time", suffixes=("_rx1", "_rx2"),
-                                   direction="nearest", tolerance=0.1)
+    baseline_gt_pd = pd.merge_asof(rx1_nmea_pd, rx2_nmea_pd, on="time", suffixes=("_rx1", "_rx2"),
+                                   direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
     baseline_gt_pd["bx_rx_m"] = baseline_gt_pd["x_rx_m_rx1"] - baseline_gt_pd["x_rx_m_rx2"]
     baseline_gt_pd["by_rx_m"] = baseline_gt_pd["y_rx_m_rx1"] - baseline_gt_pd["y_rx_m_rx2"]
     baseline_gt_pd["bz_rx_m"] = baseline_gt_pd["z_rx_m_rx1"] - baseline_gt_pd["z_rx_m_rx2"]
     baseline_gt_pd["baseline_m"] = np.sqrt(baseline_gt_pd["bx_rx_m"]**2 + baseline_gt_pd["by_rx_m"]**2 + baseline_gt_pd["bz_rx_m"]**2)
 
-    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["unix_time", "baseline_m"]], on="unix_time", suffixes=("", "_gt"),
-                                direction="nearest", tolerance=0.1)
+    baseline_pd = pd.merge_asof(baseline_pd, baseline_gt_pd[["time", "baseline_m"]], on="time", suffixes=("", "_gt"),
+                                direction="nearest", tolerance=pd.Timedelta(seconds=0.1))
 
     baseline_pd["error_m"] = baseline_pd["baseline_m"] - baseline_pd["baseline_m_gt"]
 
     baseline_pd = baseline_pd[baseline_pd["valid_estimate"] == True]
 
-    txt = f"FDE yield insufficient performances with {len(baseline_pd)} valid estimate and {baseline_pd["error_m"].mean()}m mean error for {baseline_pd["hpl_m"].mean()}m mean protection level."
+    report = (f"### Report for IRLS:\n"
+              f"# {len(baseline_pd)} valid estimates\n"
+              f"# {baseline_pd["error_m"].mean()}m mean error\n"
+              f"# {baseline_pd["hpl_m"].mean()}m mean protection level.\n")
+
+    if verbose:
+        print(report)
+
+    txt = f"FDE yield insufficient performances:\n{report}"
     assert (len(baseline_pd) > 0) and (abs(baseline_pd["error_m"]) - gt_uncertainty < baseline_pd["hpl_m"]).all(), txt
 
+    return report
+
 if __name__ == '__main__':
-    test_global_test()
-    test_classic_fde()
-    test_subset_testing()
-    test_iterative_local_test_fde()
-    test_forward_backward_fde()
-    test_danish_fde()
-    test_irls()
+    reports = []
+    reports.append(test_global_test(verbose=True))
+    reports.append(test_classic_fde(verbose=True))
+    reports.append(test_subset_testing(verbose=True))
+    reports.append(test_iterative_local_test_fde(verbose=True))
+    reports.append(test_forward_backward_fde(verbose=True))
+    reports.append(test_danish_fde(verbose=True))
+    reports.append(test_irls(verbose=True))
+
+    for report in reports:
+        print(report)

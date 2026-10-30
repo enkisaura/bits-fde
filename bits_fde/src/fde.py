@@ -306,6 +306,10 @@ def window_iterative_local_test(window_gnss_pd:pd.DataFrame, positioning_func:Ca
             local_number_of_unknown = 3 + len(window_gnss_pd[gnss_id_column].unique())
         else:
             local_number_of_unknown = number_of_unknown
+
+        if window_gnss_pd.shape[0] < local_number_of_unknown:
+            break
+
         window_gnss_pd = test.global_test(window_gnss_pd, sigma=sigma, alpha=alpha,
                                           number_of_unknown=local_number_of_unknown, weight_column=weight_column,
                                           time_column=time_column,  residuals_column=residuals_column)
@@ -424,6 +428,8 @@ def window_forward_backward(window_gnss_pd:pd.DataFrame, positioning_func:Callab
                                     time_column=time_column, residuals_column=residuals_column, *args, **kwargs))
 
     # Check if Iterative Local Test passed
+    if "valid_estimate" not in window_gnss_pd.columns:
+        return pd_gnss_estimate, window_gnss_pd
     if not window_gnss_pd["valid_estimate"].any():
         return pd_gnss_estimate, window_gnss_pd
 

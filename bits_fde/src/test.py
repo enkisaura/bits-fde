@@ -58,7 +58,7 @@ def global_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.
     return gnss_pd
 
 def window_global_test(residuals:np.ndarray, W:np.ndarray, alpha:float, number_of_unknown:int) \
-        -> tuple[bool, np.ndarray, np.ndarray]:
+        -> tuple[bool, np.ndarray, float]:
     """
     Performs global test on a single timestamp.
 
@@ -73,7 +73,7 @@ def window_global_test(residuals:np.ndarray, W:np.ndarray, alpha:float, number_o
     """
     # Checking minimal number of measurement
     if len(residuals) < number_of_unknown:
-        return False, np.array([np.nan])
+        return False, np.array([np.nan]), np.nan
 
     # chi2 statistic: Normalized Sum of Squared Error
     chi2_stat = residuals.transpose() @ W @ residuals
@@ -135,7 +135,7 @@ def local_test(gnss_pd: pd.DataFrame, sigma: float|None=None, alpha: float = 0.0
 
     return gnss_pd
 
-def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:float) -> tuple[np.ndarray, np.ndarray, float]:
     """
     Performs local test on a single timestamp.
 
@@ -155,7 +155,7 @@ def window_local_test(residuals:np.ndarray, W:np.ndarray, G:np.ndarray, alpha:fl
     try:
         Cr = np.linalg.inv(W) - G @ np.linalg.inv(G.transpose() @ W @ G) @ G.transpose()
     except np.linalg.LinAlgError:
-        return np.full(len(residuals), False), np.full(len(residuals), np.nan)
+        return np.full(len(residuals), False), np.full(len(residuals), np.nan), np.nan
 
     chi2_stat = np.abs(residuals.flatten() / np.sqrt(np.diag(Cr)))
 

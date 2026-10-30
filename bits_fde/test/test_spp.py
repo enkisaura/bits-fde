@@ -1,7 +1,5 @@
-import os
 import pandas as pd
 import numpy as np
-import bits
 from bits import parse
 from bits.src.utils import get_example_data_filepath, fast_parse
 
@@ -20,7 +18,7 @@ nmea_pd = fast_parse(get_example_data_filepath("pvt")[0], parse.pvt.rmc)
 ephemeris_df = fast_parse(get_example_data_filepath("ephemeris")[0], parse.ephemeris.rinex)
 
 alpha=0.05
-sigma=3.5
+sigma=2.5
 
 
 def test_global_test(verbose=False):
